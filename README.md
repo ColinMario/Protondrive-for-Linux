@@ -135,8 +135,11 @@ Important options:
 - `--remote-path dir/in/protondrive`
 - `--config <name-or-json>`: load a config from `~/.config/protondrive/sync-configs` or from the embedded templates.
 - `--watch` (upload only) + `--watch-debounce 30s`: keep watching for filesystem events and rerun `rclone` after changes settle.
+- `--robust` (default) keeps rerunning failed syncs with exponential backoff; tune it with `--max-attempts`, `--backoff-initial`, and `--backoff-max`.
 - `--dry-run`, `--no-progress`: pass through to rclone.
 - Extra rclone flags go after `--`, e.g. `protondrive sync ~/Docs -- --delete-after`.
+
+Robust mode is enabled automatically so long uploads/downloads can survive transient errors. Repeated attempts are idempotent because `rclone sync` skips already-mirrored files. Use `--robust=false` or `--max-attempts 1` to restore the one-shot behavior if your automation needs fast failures.
 
 Examples:
 ```bash
@@ -161,6 +164,7 @@ Flags of note:
 - `--cache-mode`, `--vfs-cache-max-age`, `--buffer-size`: pass VFS tuning parameters.
 - `--read-only`, `--allow-other`, `--allow-root`: tweak permissions.
 - `--ready-timeout`: how long to wait for the daemon to report success.
+- `--robust` (default) + `--max-attempts`, `--backoff-initial`, `--backoff-max`: keep retrying `rclone mount` if Proton Drive is temporarily unavailable.
 - `--rclone-flag=<flag>`: repeat to forward arbitrary options to `rclone mount`.
 
 Successful mounts are recorded in the state file so `status --details` can show history. Use `protondrive unmount ~/ProtonDrive` to detach (with `--force` for stuck mounts). Platform-specific helpers are invoked automatically (`fusermount`, `umount`, `diskutil`, `mountvol`).
@@ -174,7 +178,7 @@ protondrive configs init paperless-ngx-export  # copy a template
 protondrive configs show paperless-ngx-export  # inspect JSON
 protondrive sync --config paperless-ngx-export # run it
 ```
-Each JSON file can declare `name`, `description`, `local_path`, `remote_path`, `direction`, `watch`, `watch_debounce`, and `extra_rclone_args`. Templates are embedded at build time via `internal/customconfigs`.
+Each JSON file can declare `name`, `description`, `local_path`, `remote_path`, `direction`, `watch`, `watch_debounce`, `extra_rclone_args`, `robust`, `max_attempts`, `backoff_initial`, and `backoff_max`. Templates are embedded at build time via `internal/customconfigs`.
 
 ### Credential vault & automation
 Running `protondrive configure --store-credentials`

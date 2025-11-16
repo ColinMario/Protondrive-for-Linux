@@ -30,8 +30,12 @@ import (
 )
 
 const (
-	remoteDefault      = "protondrive"
-	vaultPassphraseEnv = "PROTONDRIVE_VAULT_PASSPHRASE"
+	remoteDefault         = "protondrive"
+	vaultPassphraseEnv    = "PROTONDRIVE_VAULT_PASSPHRASE"
+	defaultRobust         = true
+	defaultMaxAttempts    = 5
+	defaultBackoffInitial = 15 * time.Second
+	defaultBackoffMax     = 2 * time.Minute
 )
 
 var procMountReplacer = strings.NewReplacer(
@@ -108,6 +112,32 @@ func (f *optionalDurationFlag) Value(defaultVal time.Duration) time.Duration {
 	return defaultVal
 }
 
+type optionalIntFlag struct {
+	value int
+	set   bool
+}
+
+func (f *optionalIntFlag) String() string {
+	return strconv.Itoa(f.value)
+}
+
+func (f *optionalIntFlag) Set(value string) error {
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return err
+	}
+	f.value = parsed
+	f.set = true
+	return nil
+}
+
+func (f *optionalIntFlag) Value(defaultVal int) int {
+	if f.set {
+		return f.value
+	}
+	return defaultVal
+}
+
 type syncConfig struct {
 	Name            string   `json:"name"`
 	Description     string   `json:"description"`
@@ -117,6 +147,10 @@ type syncConfig struct {
 	Watch           bool     `json:"watch"`
 	WatchDebounce   string   `json:"watch_debounce"`
 	ExtraRcloneArgs []string `json:"extra_rclone_args"`
+	Robust          *bool    `json:"robust"`
+	MaxAttempts     int      `json:"max_attempts"`
+	BackoffInitial  string   `json:"backoff_initial"`
+	BackoffMax      string   `json:"backoff_max"`
 }
 
 type loadedSyncConfig struct {
@@ -514,6 +548,14 @@ func runSync(remote string, args []string) error {
 	fs.Var(&watchFlag, "watch", "Watch the local folder for changes (upload only)")
 	watchDebounceFlag := optionalDurationFlag{value: 10 * time.Second}
 	fs.Var(&watchDebounceFlag, "watch-debounce", "Minimum delay between syncs while watching (default 10s)")
+	var robustFlag optionalBoolFlag
+	fs.Var(&robustFlag, "robust", "Automatically retry failed syncs with exponential backoff")
+	var maxAttemptsFlag optionalIntFlag
+	fs.Var(&maxAttemptsFlag, "max-attempts", "Maximum attempts when --robust is enabled (default 5)")
+	backoffInitialFlag := optionalDurationFlag{value: defaultBackoffInitial}
+	fs.Var(&backoffInitialFlag, "backoff-initial", "Initial backoff when --robust retries (default 15s)")
+	backoffMaxFlag := optionalDurationFlag{value: defaultBackoffMax}
+	fs.Var(&backoffMaxFlag, "backoff-max", "Maximum backoff when --robust retries (default 2m)")
 	if err := parseCommandFlags(fs, args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -590,6 +632,49 @@ func runSync(remote string, args []string) error {
 		watchDebounce = 10 * time.Second
 	}
 
+	robustDefault := defaultRobust
+	if cfg != nil && cfg.Config.Robust != nil {
+		robustDefault = *cfg.Config.Robust
+	}
+	robustEnabled := robustFlag.Value(robustDefault)
+
+	maxAttemptsDefault := defaultMaxAttempts
+	if cfg != nil && cfg.Config.MaxAttempts > 0 {
+		maxAttemptsDefault = cfg.Config.MaxAttempts
+	}
+	maxAttempts := maxAttemptsFlag.Value(maxAttemptsDefault)
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+
+	backoffInitialDefault := defaultBackoffInitial
+	if cfg != nil && strings.TrimSpace(cfg.Config.BackoffInitial) != "" {
+		value := strings.TrimSpace(cfg.Config.BackoffInitial)
+		parsed, err := time.ParseDuration(value)
+		if err != nil {
+			return fmt.Errorf("config \"%s\" has invalid backoff_initial %q: %w", cfg.DisplayName, value, err)
+		}
+		backoffInitialDefault = parsed
+	}
+	backoffInitial := backoffInitialFlag.Value(backoffInitialDefault)
+
+	backoffMaxDefault := defaultBackoffMax
+	if cfg != nil && strings.TrimSpace(cfg.Config.BackoffMax) != "" {
+		value := strings.TrimSpace(cfg.Config.BackoffMax)
+		parsed, err := time.ParseDuration(value)
+		if err != nil {
+			return fmt.Errorf("config \"%s\" has invalid backoff_max %q: %w", cfg.DisplayName, value, err)
+		}
+		backoffMaxDefault = parsed
+	}
+	backoffMax := backoffMaxFlag.Value(backoffMaxDefault)
+	if backoffInitial <= 0 {
+		backoffInitial = defaultBackoffInitial
+	}
+	if backoffMax <= 0 || backoffMax < backoffInitial {
+		backoffMax = backoffInitial
+	}
+
 	localAbs := expandPath(localPath)
 	if dir == "upload" {
 		if stat, err := os.Stat(localAbs); err != nil || !stat.IsDir() {
@@ -621,9 +706,14 @@ func runSync(remote string, args []string) error {
 	}
 	cmd = append(cmd, extra...)
 
+	retryCfg := retryOptions{
+		enabled:        robustEnabled,
+		maxAttempts:    maxAttempts,
+		initialBackoff: backoffInitial,
+		maxBackoff:     backoffMax,
+	}
 	runOnce := func() error {
-		fmt.Printf("Running: rclone %s\n", strings.Join(cmd, " "))
-		return streamRclone(cmd...)
+		return runRcloneWithRetry(cmd, retryCfg)
 	}
 	if watchEnabled {
 		fmt.Printf("Watching %s for changes (debounce %s). Press Ctrl+C to stop.\n", localAbs, watchDebounce)
@@ -645,6 +735,14 @@ func runMount(remote string, args []string) error {
 	readyTimeout := fs.Duration("ready-timeout", 30*time.Second, "Max wait for mounts to become ready when backgrounding")
 	var customFlags repeatableFlag
 	fs.Var(&customFlags, "rclone-flag", "Additional flag passed through to rclone mount (repeatable)")
+	var robustFlag optionalBoolFlag
+	fs.Var(&robustFlag, "robust", "Automatically retry failed mounts with exponential backoff")
+	var maxAttemptsFlag optionalIntFlag
+	fs.Var(&maxAttemptsFlag, "max-attempts", "Maximum mount attempts when --robust is enabled (default 5)")
+	backoffInitialFlag := optionalDurationFlag{value: defaultBackoffInitial}
+	fs.Var(&backoffInitialFlag, "backoff-initial", "Initial backoff when --robust retries mounts (default 15s)")
+	backoffMaxFlag := optionalDurationFlag{value: defaultBackoffMax}
+	fs.Var(&backoffMaxFlag, "backoff-max", "Maximum backoff when --robust retries mounts (default 2m)")
 	if err := parseCommandFlags(fs, args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -696,17 +794,37 @@ func runMount(remote string, args []string) error {
 	}
 	cmd = append(cmd, extra...)
 
+	robustEnabled := robustFlag.Value(defaultRobust)
+	maxAttempts := maxAttemptsFlag.Value(defaultMaxAttempts)
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	backoffInitial := backoffInitialFlag.Value(defaultBackoffInitial)
+	backoffMax := backoffMaxFlag.Value(defaultBackoffMax)
+	if backoffInitial <= 0 {
+		backoffInitial = defaultBackoffInitial
+	}
+	if backoffMax <= 0 || backoffMax < backoffInitial {
+		backoffMax = backoffInitial
+	}
+	retryCfg := retryOptions{
+		enabled:        robustEnabled,
+		maxAttempts:    maxAttempts,
+		initialBackoff: backoffInitial,
+		maxBackoff:     backoffMax,
+	}
+
 	target := remotePath(remote, *remotePathFlag)
 	if *foreground {
 		fmt.Printf("Mounting %s at %s. Press Ctrl+C to stop.\n", target, mountPoint)
-		if err := streamRclone(cmd...); err != nil {
+		if err := runRcloneWithRetry(cmd, retryCfg); err != nil {
 			return mountErrorWithHints(target, mountPoint, *readyTimeout, err, false)
 		}
 		return nil
 	}
 
 	fmt.Printf("Mounting %s at %s. This returns once the mount is ready.\n", target, mountPoint)
-	if err := streamRclone(cmd...); err != nil {
+	if err := runRcloneWithRetry(cmd, retryCfg); err != nil {
 		return mountErrorWithHints(target, mountPoint, *readyTimeout, err, true)
 	}
 	recordMountAttach(remote, mountPoint, target)
@@ -1786,6 +1904,79 @@ func streamRclone(args ...string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+type retryOptions struct {
+	enabled        bool
+	maxAttempts    int
+	initialBackoff time.Duration
+	maxBackoff     time.Duration
+}
+
+func runRcloneWithRetry(cmd []string, opts retryOptions) error {
+	command := fmt.Sprintf("rclone %s", strings.Join(cmd, " "))
+	maxAttempts := opts.maxAttempts
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	initial := opts.initialBackoff
+	if initial <= 0 {
+		initial = defaultBackoffInitial
+	}
+	maxBackoff := opts.maxBackoff
+	if maxBackoff <= 0 {
+		maxBackoff = initial
+	}
+	if maxBackoff < initial {
+		maxBackoff = initial
+	}
+	if !opts.enabled || maxAttempts == 1 {
+		fmt.Printf("Running: %s\n", command)
+		return streamRclone(cmd...)
+	}
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		fmt.Printf("Running: %s (attempt %d/%d)\n", command, attempt, maxAttempts)
+		err := streamRclone(cmd...)
+		if err == nil {
+			if attempt > 1 {
+				fmt.Printf("Command completed after %d attempt(s).\n", attempt)
+			}
+			return nil
+		}
+		if attempt == maxAttempts {
+			return fmt.Errorf("%s failed after %d attempt(s): %w", command, attempt, err)
+		}
+		backoff := computeBackoffDelay(initial, maxBackoff, attempt)
+		fmt.Fprintf(os.Stderr, "Attempt %d/%d failed: %v. Retrying in %s...\n", attempt, maxAttempts, err, backoff)
+		time.Sleep(backoff)
+	}
+	return nil
+}
+
+func computeBackoffDelay(initial, max time.Duration, failures int) time.Duration {
+	if failures <= 0 {
+		failures = 1
+	}
+	if initial <= 0 {
+		initial = defaultBackoffInitial
+	}
+	if max <= 0 {
+		max = initial
+	}
+	if max < initial {
+		max = initial
+	}
+	delay := initial
+	for i := 1; i < failures; i++ {
+		delay *= 2
+		if delay >= max {
+			return max
+		}
+	}
+	if delay > max {
+		return max
+	}
+	return delay
 }
 
 func watchAndSync(localPath string, debounce time.Duration, run func() error) error {

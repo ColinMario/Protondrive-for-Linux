@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestExpandPath(t *testing.T) {
@@ -33,5 +34,26 @@ func TestExpandPath(t *testing.T) {
 				t.Fatalf("expandPath(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestComputeBackoffDelay(t *testing.T) {
+	initial := 10 * time.Second
+	max := 1 * time.Minute
+	cases := []struct {
+		failures int
+		want     time.Duration
+	}{
+		{failures: 0, want: initial},
+		{failures: 1, want: initial},
+		{failures: 2, want: 2 * initial},
+		{failures: 3, want: 4 * initial},
+		{failures: 4, want: max},
+		{failures: 5, want: max},
+	}
+	for _, tc := range cases {
+		if got := computeBackoffDelay(initial, max, tc.failures); got != tc.want {
+			t.Fatalf("computeBackoffDelay(%s, %s, %d) = %s, want %s", initial, max, tc.failures, got, tc.want)
+		}
 	}
 }
