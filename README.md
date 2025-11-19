@@ -236,6 +236,7 @@ go test ./...
 Integration coverage relies on your local rclone installation. For CI or scripted checks, stub out rclone or run against a disposable Proton test account.
 
 ## Troubleshooting
+- **Blocked behind Proton VPN ("too many connection attempts")**: Proton's anti-abuse layer counts logins per exit IP, so Proton VPN's shared addresses often trigger 422/2028 errors or the Proton Drive warning banner. Split-tunnel Proton domains outside the VPN or forward rclone's `--bind <LAN_IP>` flag through this CLI (for example, `protondrive sync ~/Docs --remote-path backups -- --bind 192.168.1.25`) so Proton Drive connections leave via your regular interface instead of the congested VPN endpoint [speich.net](https://www.speich.net/articles/en/2024/12/14/use-proton-drive-on-linux/). Proton staff also asked rclone users not to cron sync every few minutes because it re-triggers these protections, so space out automations to longer intervals [Reddit](https://www.reddit.com/r/rclone/comments/1d2pm6p/comment/l67lpl2/).
 - **`rclone` not found**: ensure `rclone` is on `$PATH`; the CLI checks via `exec.LookPath` before running commands.
 - **Mounts never become ready**: rerun with `protondrive mount --foreground` to see rclone logs, or increase `--ready-timeout`. Confirm `fusermount3` is installed.
 - **Auto-refresh keeps failing**: verify `PROTONDRIVE_VAULT_PASSPHRASE` matches the passphrase used when storing credentials. Delete `<remote>.creds` and rerun `configure --store-credentials` if unsure.
