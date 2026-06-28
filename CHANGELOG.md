@@ -3,6 +3,8 @@
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [0.2.0] - 2026-06-29
 ### Added
 - Added backend selection with `auto`, `proton`, and `rclone` modes plus binary overrides for `proton-drive` and `rclone`.
 - Added support for Proton's official `proton-drive` CLI for browser login, status checks, browsing, and upload/download workflows.
