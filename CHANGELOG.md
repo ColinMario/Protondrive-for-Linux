@@ -2,6 +2,25 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+### Added
+- Added backend selection with `auto`, `proton`, and `rclone` modes plus binary overrides for `proton-drive` and `rclone`.
+- Added support for Proton's official `proton-drive` CLI for browser login, status checks, browsing, and upload/download workflows.
+- Added `configure --from-proton-cli-session` to import Proton's official CLI session from the OS secret store into an rclone Proton Drive remote for mounts.
+- Added `configure --from-rclone-session` to export an initialized rclone Proton Drive session back into Proton's official CLI secret store.
+- Added `configure --headless` for browserless password/2FA setup that initializes rclone tokens and writes a compatible official Proton CLI session to the OS secret store.
+- Added support for Proton CLI's `PROTON_DRIVE_UNSAFE_SECRETS` plaintext session file mode for headless systems without Secret Service.
+- Added Proton transfer conflict flags and thumbnail control for `sync` when using the official CLI backend.
+- Added macOS WebDAV mounting through rclone `serve webdav` plus `mount_webdav`, avoiding stale or blocked macFUSE installs in default mount mode.
+- Added Linux persistent mounts with `mount --persist`, generated `systemd --user` services, optional `--enable-linger`, and `unmount --remove-persist`.
+
+### Changed
+- Commands no longer require rclone globally before dispatch; backend checks now happen only for commands that need them.
+- `auto` mode keeps rclone for mounts, custom remotes, dry-runs, and rclone passthrough flags while preferring Proton's CLI where supported.
+- `sync` now accepts documented flag ordering such as `protondrive sync ~/Docs --remote-path /my-files/backups`.
+- macOS force unmount now uses the modern `diskutil unmount force <mountpoint>` syntax.
+- README now documents the official Proton Drive CLI, SDK status, backend tradeoffs, and rclone's remaining role.
+
 ## [0.1.0] - 2025-11-15
 ### Added
 - Initial Protondrive CLI that wraps rclone for configuring, syncing, browsing, mounting, and unmounting Proton Drive remotes.

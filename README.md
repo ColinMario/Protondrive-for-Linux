@@ -1,249 +1,352 @@
 # Protondrive-for-Linux
 
-![Go Version](https://img.shields.io/badge/Go-1.21%2B-00ADD8.svg) ![rclone](https://img.shields.io/badge/rclone-ProtonDrive-5d2fbe.svg) ![License](https://img.shields.io/badge/License-GPLv3-green.svg)
+![Go Version](https://img.shields.io/badge/Go-1.21%2B-00ADD8.svg) ![Proton Drive CLI](https://img.shields.io/badge/Proton%20Drive%20CLI-0.4.x-6d4aff.svg) ![rclone](https://img.shields.io/badge/rclone-optional%20mount%2Fsync-5d2fbe.svg) ![License](https://img.shields.io/badge/License-GPLv3-green.svg)
 
-> ⚠️ This is an **unofficial** community project and is **not affiliated** with Proton AG or Proton Drive.
+> This is an unofficial community project and is not affiliated with Proton AG or Proton Drive.
 
-Go-based CLI that wraps the rclone Proton Drive backend so you can configure, sync, browse, and mount Proton Drive from any Linux shell (and other POSIX systems) without Python or desktop dependencies.
+Go-based convenience CLI for Proton Drive on Linux and other POSIX shells. The tool now prefers Proton's official `proton-drive` CLI for login, browsing, uploads, and downloads, while keeping the existing rclone backend for features Proton's CLI does not yet provide, especially FUSE mounts and exact `rclone sync` workflows.
 
-## Table of contents
-- [Why Protondrive-for-Linux](#why-protondrive-for-linux)
-- [Architecture at a glance](#architecture-at-a-glance)
-- [Requirements](#requirements)
-- [Installation](#installation)
-- [Quick start](#quick-start)
-- [CLI usage](#cli-usage)
-  - [Configure the remote](#configure-the-remote)
-  - [Inspect Proton Drive status](#inspect-proton-drive-status)
-  - [Sync workflows](#sync-workflows)
-  - [Mounting Proton Drive](#mounting-proton-drive)
-  - [Managing reusable sync configs](#managing-reusable-sync-configs)
-  - [Credential vault & automation](#credential-vault--automation)
-- [Configuration & data locations](#configuration--data-locations)
-- [Environment variables](#environment-variables)
-- [Built-in sync templates](#built-in-sync-templates)
-- [Development](#development)
-- [Testing & QA](#testing--qa)
-- [Troubleshooting](#troubleshooting)
-- [Contributing](#contributing)
-- [License](#license)
+## What changed
 
-## Why Protondrive-for-Linux
-- Single static binary handles configure/sync/mount flows for Proton Drive through rclone.
-- Works anywhere rclone runs: Linux servers, containers, headless SBCs, or automated jobs.
-- Ships with reusable JSON sync templates and optional filesystem watching powered by `fsnotify`.
-- Offers an encrypted credential vault (AES-256-GCM + scrypt) for zero-touch re-authentication when Proton expires sessions.
-- Records mount metadata so you can see when and where remotes are attached.
+Proton released an official Drive CLI backed by the Proton Drive SDK. It supports browser-based login, filesystem listing, upload/download, sharing, invitations, JSON output, and OS secret-store sessions.
 
-## Architecture at a glance
-- `cmd/protondrive`: main CLI entrypoint built with the Go standard library and `fsnotify`.
-- `internal/customconfigs`: embedded JSON templates that you can copy/edit via `protondrive configs`.
-- External dependency: [`rclone`](https://rclone.org/) with the Proton Drive backend enabled (no direct Proton API calls).
-- Credential vault + remote state live under `~/.config/protondrive` (or the OS-specific config dir).
-- All heavy lifting (syncing, mounting) is delegated to `rclone`; this project adds ergonomic workflows around it.
+This repository now supports three backend modes:
+
+| Backend | Purpose | When it is used |
+| --- | --- | --- |
+| `auto` | Default. Prefer official `proton-drive` where the command maps cleanly. | `configure`, `status`, `browse`, and simple `sync` transfers when `proton-drive` is installed. |
+| `proton` | Force Proton's official CLI. | Use this when you want SDK-backed auth and transfers without rclone config. |
+| `rclone` | Force the legacy rclone backend. | Required for `mount`, custom rclone remotes, `--dry-run`, extra rclone flags, and exact rclone mirroring behavior. |
+
+The upstream Proton Drive SDK is still evolving and Proton documents direct SDK usage as not yet ready for commercial/production third-party apps. For that reason this project integrates through the official `proton-drive` CLI instead of compiling directly against unstable SDK internals.
 
 ## Requirements
-- Linux or another POSIX environment supported by rclone (mount helpers require FUSE/fusermount on Unix, `mountvol` on Windows WSL).
-- [Go 1.21+](https://go.dev/dl/) to build from source.
-- [rclone](https://rclone.org/install/) compiled with the Proton Drive backend (`rclone version` shows `protondrive`).
-- `fusermount`/`fusermount3` (Linux) or `diskutil` (macOS) when using the `mount` command.
+
+- Go 1.21+ to build this wrapper.
+- Proton's official Drive CLI for the modern backend. Download it from [proton.me/download/drive/cli](https://proton.me/download/drive/cli/index.html) and place `proton-drive` on your `PATH`.
+- A Proton account and browser access for `proton-drive auth login`.
+- Linux secret storage for Proton's CLI sessions, for example libsecret with GNOME Keyring or KWallet.
+- Linux `secret-tool` from `libsecret-tools` when importing Proton's official CLI session into rclone.
+- rclone only when you need `mount`, named rclone remotes, rclone dry-runs, or rclone-specific sync flags.
+- Linux: FUSE/fusermount when using `mount`.
+- macOS: no macFUSE is required for the default mount path; `mount` uses rclone WebDAV plus macOS `mount_webdav` in `auto` mode. Install/approve macFUSE only if you force `--mount-method fuse`.
 
 ## Installation
+
 ```bash
-# clone the repository
 git clone https://github.com/ColinMario/Protondrive-for-Linux.git
 cd Protondrive-for-Linux
-
-# build the CLI (outputs ./protondrive)
 go build ./cmd/protondrive
-
-# optional: install to /usr/local/bin (or another $PATH location)
 sudo install -m 0755 protondrive /usr/local/bin/protondrive
 ```
-To upgrade, pull the latest changes and rebuild:
+
+Install Proton's official CLI separately:
+
 ```bash
-git pull --ff-only
-go build ./cmd/protondrive && sudo install -m 0755 protondrive /usr/local/bin/protondrive
+# Example for Linux x64. Verify the current version and checksum on Proton's download page.
+curl -L -o proton-drive https://proton.me/download/drive/cli/0.4.6/linux-x64/proton-drive
+chmod +x proton-drive
+sudo install -m 0755 proton-drive /usr/local/bin/proton-drive
 ```
 
 ## Quick start
-1. Install rclone and ensure `rclone config` can create Proton Drive remotes.
-2. Build/install `protondrive` as shown above.
-3. Configure the remote and populate the credential vault:
-   ```bash
-   protondrive configure --email alice@proton.me --store-credentials
-   ```
-4. Inspect the connection:
-   ```bash
-   protondrive status --details
-   ```
-5. Sync or mount as needed:
-   ```bash
-   protondrive sync ~/Docs --remote-path backups
-   protondrive mount ~/ProtonDrive
-   ```
+
+```bash
+# Browser login through Proton's official CLI
+protondrive configure
+
+# Optional: reuse that Proton CLI session for rclone mounts
+protondrive --backend rclone configure --from-proton-cli-session
+
+# Check CLI version and auth/listing state
+protondrive status --details
+
+# Browse folders in /my-files
+protondrive browse
+
+# Browse files in a folder
+protondrive browse --remote-path Documents --files
+
+# Upload a local folder using Proton's CLI backend
+protondrive sync ~/Documents --remote-path /my-files/backups --conflict-strategy merge
+
+# Download from Proton Drive
+protondrive sync ~/Downloads/ProtonMirror --direction download --remote-path /my-files/backups/Documents --conflict-strategy merge
+```
+
+## Backend selection
+
+```bash
+protondrive --backend auto status
+protondrive --backend proton browse --remote-path /my-files
+protondrive --backend rclone sync ~/Documents --remote-path backups --dry-run
+```
+
+Global options:
+
+| Option | Environment variable | Default |
+| --- | --- | --- |
+| `--backend auto\|proton\|rclone` | `PROTONDRIVE_BACKEND` | `auto` |
+| `--proton-drive-bin <path>` | `PROTONDRIVE_PROTON_BIN` | `proton-drive` |
+| `--rclone-bin <path>` | `PROTONDRIVE_RCLONE_BIN` | `rclone` |
+| `--remote <name>` | n/a | `protondrive` |
+
+Using a custom `--remote` selects the rclone backend automatically because Proton's official CLI manages its own account session instead of named remotes.
 
 ## CLI usage
+
+```text
+protondrive [--backend auto|proton|rclone] [--remote name] <command> [options]
 ```
-protondrive [--remote name] <command> [options]
-```
-Commands summary:
 
-| Command | Purpose |
-| --- | --- |
-| `configure` | Create/update the Proton Drive rclone remote with credentials and optional vault entry. |
-| `status` | Show whether the remote exists; `--details` prints auth history, vault status, mount overview, and top-level folders. |
-| `browse` | List remote folders (`lsd`) or files (`--files` runs `ls`). |
-| `sync` | Upload/download folders, optionally with watch mode or JSON configs. |
-| `mount` | Mount Proton Drive via `rclone mount`, foreground or daemonized. |
-| `unmount` | Detach mount points (`--force` tries OS-specific force options). |
-| `configs` | List, show, or copy reusable sync config templates. |
+| Command | Proton backend | rclone backend |
+| --- | --- | --- |
+| `configure` | Runs `proton-drive auth login`. | Creates/updates an rclone Proton Drive remote. |
+| `status` | Prints official CLI version and verifies Drive listing. | Checks the rclone remote and optional details. |
+| `browse` | Runs `proton-drive filesystem list`. Defaults to `/my-files`. | Runs `rclone lsd` or `rclone ls`. |
+| `sync` | Runs `filesystem upload` or `filesystem download`. | Runs `rclone sync`. |
+| `mount` | Not supported by Proton's CLI. | Runs `rclone mount` on Linux and rclone WebDAV + `mount_webdav` by default on macOS. |
+| `unmount` | Uses OS unmount helpers. | Uses OS unmount helpers. |
+| `configs` | Backend-independent JSON templates. | Backend-independent JSON templates. |
 
-### Configure the remote
-`protondrive configure` wraps `rclone config create` for the Proton Drive backend. Key options:
-- `--email`, `--password`, `--twofa`: supply credentials directly.
-- `--password-stdin`, `--twofa-stdin`, `--vault-passphrase-stdin`: read sensitive values from STDIN for automation.
-- `--non-interactive`: fail instead of prompting when a value is missing.
-- `--skip-verify`: avoid the post-config `lsd` sanity check.
-- `--store-credentials`: encrypt the credentials locally for auto-refresh. Pair with `--vault-passphrase` or the `PROTONDRIVE_VAULT_PASSPHRASE` env var.
+### Configure
 
-Example:
+Modern login:
+
 ```bash
-PROTONDRIVE_VAULT_PASSPHRASE="s3cret" \
-protondrive configure \
-  --email alice@proton.me \
-  --password-stdin <<<"$(pass protondrive/password)" \
-  --twofa-stdin    <<<"$(pass protondrive/totp)" \
-  --store-credentials --non-interactive
+protondrive configure
 ```
 
-### Inspect Proton Drive status
-- `protondrive status --details` prints
-  - last successful auth and method (configure, status, auto-refresh),
-  - the vault state (enabled/missing/disabled),
-  - recorded mounts with OS verification,
-  - and a list of top-level folders (via `rclone lsd`).
-- `protondrive browse --remote-path Shares/Photos --files` displays directory contents without syncing.
+Legacy rclone remote:
 
-If authentication fails, the CLI attempts to auto-refresh from the vault and records the outcome in `~/.config/protondrive/<remote>.state`.
-
-### Sync workflows
-`protondrive sync [local_path]` orchestrates `rclone sync` for uploads (default) or downloads.
-
-Important options:
-- `--direction upload|download`
-- `--remote-path dir/in/protondrive`
-- `--config <name-or-json>`: load a config from `~/.config/protondrive/sync-configs` or from the embedded templates.
-- `--watch` (upload only) + `--watch-debounce 30s`: keep watching for filesystem events and rerun `rclone` after changes settle.
-- `--dry-run`, `--no-progress`: pass through to rclone.
-- Extra rclone flags go after `--`, e.g. `protondrive sync ~/Docs -- --delete-after`.
-
-Examples:
 ```bash
-# Upload a project folder into Proton Drive/Projects
-dirs=Projects/MyApp
-protondrive sync ~/Projects/MyApp --remote-path "$dirs"
+protondrive --backend rclone configure --email alice@proton.me --store-credentials
+```
 
-# Download to an offline mirror
-protondrive sync ~/ProtonMirror --remote-path Backups/server --direction download
+Browserless/headless setup for servers:
 
-# Use a preset config and keep it in sync when files change
-protondrive sync --config paperless-ngx-export --watch --watch-debounce 45s
+```bash
+printf '%s\n' "$PROTON_PASSWORD" |
+  protondrive configure --headless --email alice@proton.me --password-stdin
+```
+
+With 2FA and the local credential vault:
+
+```bash
+{
+  printf '%s\n' "$PROTON_PASSWORD"
+  printf '%s\n' "$PROTON_2FA_CODE"
+  printf '%s\n' "$PROTONDRIVE_VAULT_PASSPHRASE"
+} | protondrive configure --headless --email alice@proton.me \
+    --password-stdin --twofa-stdin --store-credentials --vault-passphrase-stdin
+```
+
+`--headless` never starts Proton's browser login. In `auto` mode it uses rclone's Proton password-auth flow to initialize cached Proton tokens, then writes a compatible official Proton CLI session into the OS secret store (`ch.proton.drive/drive-sdk-cli` / `auth-session`). That gives you both a working rclone mount remote and a browserless `proton-drive` CLI session for later `browse`/`sync` commands. The command behaves like `--non-interactive` and fails if required values are missing. Use `--skip-verify` only when `proton-drive` is not installed yet; rclone still performs one real listing so the session tokens can be captured.
+
+On headless Linux where no Secret Service is available, you can opt into Proton CLI's official plaintext file session mode:
+
+```bash
+export PROTON_DRIVE_UNSAFE_SECRETS=true
+export PROTON_DRIVE_CACHE_DIR=/var/lib/proton-drive-cli
+printf '%s\n' "$PROTON_PASSWORD" |
+  protondrive configure --headless --email alice@proton.me --password-stdin --skip-verify
+```
+
+This writes `${PROTON_DRIVE_CACHE_DIR}/auth-session.json` with mode `0600`. Only use it on a machine/account where that file is protected by OS permissions.
+
+Reuse Proton's official CLI session for rclone mounts without entering the account password again:
+
+```bash
+protondrive --backend proton configure
+protondrive --backend rclone configure --from-proton-cli-session
+```
+
+Export an already-initialized rclone session back into Proton's official CLI secret store:
+
+```bash
+protondrive --backend rclone configure --from-rclone-session
+```
+
+The session import reads Proton's OS secret-store entry (`ch.proton.drive/drive-sdk-cli` / `auth-session`) and writes an rclone Proton Drive remote containing the SDK session fields rclone needs. It uses macOS Keychain on macOS and `secret-tool`/Secret Service on Linux. The old encrypted credential vault remains available for password-based rclone auto-refresh.
+
+### Browse
+
+```bash
+protondrive browse                         # folders in /my-files
+protondrive browse --files                 # files in /my-files
+protondrive browse --all --remote-path /   # top-level Proton sections
+protondrive --backend rclone browse --remote-path Shares/Photos --files
+```
+
+For the Proton backend, relative remote paths are resolved under `/my-files`. Absolute Proton CLI paths such as `/`, `/my-files`, `/shared-with-me`, and `/trash` are passed through.
+
+### Sync and transfer workflows
+
+The Proton backend maps to the official CLI transfer commands:
+
+```bash
+protondrive sync ~/Pictures/ToProton --remote-path /my-files/Photos --conflict-strategy merge
+protondrive sync ~/Mirror --direction download --remote-path /my-files/Photos --folder-conflict-strategy merge --file-conflict-strategy replace
+```
+
+Proton conflict strategies:
+
+- `--conflict-strategy merge|keep-both|replace|skip`
+- `--file-conflict-strategy merge|keep-both|replace|skip` for uploads
+- `--file-conflict-strategy keep-both|replace|skip` for downloads
+- `--folder-conflict-strategy merge|keep-both|replace|skip`
+- `--skip-thumbnails` for uploads
+
+Use rclone when you need exact rclone mirror semantics, `--dry-run`, or passthrough flags:
+
+```bash
+protondrive --backend rclone sync ~/Documents --remote-path backups --dry-run
+protondrive --backend rclone sync ~/Documents --remote-path backups -- --delete-after
+```
+
+Watch mode still works with both upload backends by rerunning the selected transfer after filesystem changes settle:
+
+```bash
+protondrive sync ~/Paperless/export --remote-path /my-files/Backups/Paperless --watch --watch-debounce 45s
 ```
 
 ### Mounting Proton Drive
-`protondrive mount ~/ProtonDrive` wraps `rclone mount` and can run either
-- foreground (`--foreground`) so you can keep the process attached, or
-- background (default) with `--daemon` until rclone reports readiness.
 
-Flags of note:
-- `--remote-path`: mount only a subfolder.
-- `--cache-mode`, `--vfs-cache-max-age`, `--buffer-size`: pass VFS tuning parameters.
-- `--read-only`, `--allow-other`, `--allow-root`: tweak permissions.
-- `--ready-timeout`: how long to wait for the daemon to report success.
-- `--rclone-flag=<flag>`: repeat to forward arbitrary options to `rclone mount`.
+Proton's official CLI does not currently expose a mount command. Mounting still requires rclone.
 
-Successful mounts are recorded in the state file so `status --details` can show history. Use `protondrive unmount ~/ProtonDrive` to detach (with `--force` for stuck mounts). Platform-specific helpers are invoked automatically (`fusermount`, `umount`, `diskutil`, `mountvol`).
+If you authenticated through Proton's official CLI, create the rclone mount remote from that session first:
 
-### Managing reusable sync configs
+```bash
+protondrive --backend rclone configure --from-proton-cli-session
+```
+
+If you authenticated headlessly through rclone first, create the official Proton CLI session from that cached rclone session:
+
+```bash
+protondrive --backend rclone configure --from-rclone-session
+```
+
+On macOS, `auto` mode avoids stale or blocked macFUSE installations by serving the rclone remote over localhost WebDAV and mounting it with macOS `mount_webdav`:
+
+```bash
+protondrive --backend rclone mount ~/ProtonDrive
+protondrive unmount ~/ProtonDrive
+```
+
+Force the classic FUSE path when you have a working macFUSE install:
+
+```bash
+protondrive --backend rclone mount ~/ProtonDrive --mount-method fuse
+```
+
+Linux continues to use FUSE/fusermount by default. `--mount-method webdav` is currently macOS-only.
+
+### Persistent Linux mounts
+
+Linux can keep Proton Drive mounted across reboots through a `systemd --user` service generated by this CLI. The service runs the rclone mount in foreground mode, restarts it if it crashes, and is enabled for future user sessions.
+
+First make sure the rclone remote exists. The recommended path is to import the official Proton CLI session:
+
+```bash
+protondrive --backend proton configure
+protondrive --backend rclone configure --from-proton-cli-session
+```
+
+Password-based rclone configuration remains available with `protondrive --backend rclone configure --email alice@proton.me --store-credentials`.
+For fully browserless servers, use `protondrive configure --headless --email ... --password-stdin`; it writes the official Proton CLI session and the rclone remote in one run.
+
+Install and start a persistent mount:
+
+```bash
+protondrive --backend rclone mount ~/ProtonDrive --persist --persist-name main-drive
+```
+
+Useful variants:
+
+```bash
+# Mount only a subfolder
+protondrive --backend rclone mount ~/ProtonBackups --remote-path Backups --persist --persist-name backups
+
+# Allow the user service to start at boot before an interactive login
+protondrive --backend rclone mount ~/ProtonDrive --persist --enable-linger
+
+# Pass rclone mount tuning flags
+protondrive --backend rclone mount ~/ProtonDrive --persist --rclone-flag --dir-cache-time=10m
+```
+
+Inspect the generated Linux service:
+
+```bash
+systemctl --user status protondrive-mount-main-drive.service
+journalctl --user -u protondrive-mount-main-drive.service -f
+```
+
+Remove a persistent mount:
+
+```bash
+protondrive unmount ~/ProtonDrive --remove-persist --persist-name main-drive --force
+```
+
+Notes:
+
+- `--persist` is Linux-only and requires systemd user services.
+- Without `--enable-linger`, the mount starts when the user session starts. With lingering enabled, systemd can start the user service after boot without an active graphical/SSH login.
+- `--persist` uses FUSE/fusermount on Linux. Install `fuse3`/`fusermount3` or the equivalent package for your distribution.
+- Use `--rclone-flag` for extra rclone mount options. Positional passthrough flags are intentionally rejected for persistent units so the generated service stays deterministic.
+
+## Reusable sync configs
+
 The CLI stores JSON configs under `${XDG_CONFIG_HOME:-~/.config}/protondrive/sync-configs`.
 
-```
-protondrive configs list   # built-ins + user configs
-protondrive configs init paperless-ngx-export  # copy a template
-protondrive configs show paperless-ngx-export  # inspect JSON
-protondrive sync --config paperless-ngx-export # run it
-```
-Each JSON file can declare `name`, `description`, `local_path`, `remote_path`, `direction`, `watch`, `watch_debounce`, and `extra_rclone_args`. Templates are embedded at build time via `internal/customconfigs`.
-
-### Credential vault & automation
-Running `protondrive configure --store-credentials`
-1. Prompts for a vault passphrase (or reads `PROTONDRIVE_VAULT_PASSPHRASE`).
-2. Encrypts `{email, password, twofa}` with AES-256-GCM; the key is derived via scrypt.
-3. Saves `<remote>.creds` to `~/.config/protondrive` and records metadata in `<remote>.state`.
-
-Whenever `status`, `browse`, `sync`, or `mount` detects an auth failure, the CLI automatically decrypts the vault, reruns `configure` quietly, and retries the original command. Supply the passphrase non-interactively through the environment for cron/systemd usage:
 ```bash
-export PROTONDRIVE_VAULT_PASSPHRASE="s3cret"
-protondrive sync --config nightly-backup --dry-run
+protondrive configs list
+protondrive configs init paperless-ngx-export
+protondrive configs show paperless-ngx-export
+protondrive sync --config paperless-ngx-export
 ```
-Delete `<remote>.creds` if you want to disable auto-refresh.
 
-## Configuration & data locations
+Each JSON file can declare `name`, `description`, `local_path`, `remote_path`, `direction`, `watch`, `watch_debounce`, and `extra_rclone_args`. If `extra_rclone_args` is present, `auto` selects the rclone backend for that run.
+
+## Configuration locations
+
 | Path | Purpose |
 | --- | --- |
-| `${XDG_CONFIG_HOME:-~/.config}/protondrive` | Base directory for all Protondrive CLI metadata. |
-| `*.creds` | Encrypted credential vault per remote. |
-| `*.state` | JSON with last auth info, vault state, and mount history. |
-| `sync-configs/` | Folder that holds user-defined sync JSON files. |
-| `sync-configs/*.json` | Individual configs referenced by `--config`. |
+| `${XDG_CONFIG_HOME:-~/.config}/protondrive` | Wrapper metadata. |
+| `*.creds` | Legacy encrypted credential vault for rclone mode. |
+| `*.state` | Last auth and mount metadata recorded by this wrapper. |
+| `sync-configs/*.json` | User sync config files. |
 
-## Environment variables
-- `PROTONDRIVE_VAULT_PASSPHRASE`: Provides the vault passphrase so commands can run non-interactively. Leave unset to be prompted each time.
-- `XDG_CONFIG_HOME`: Standard override for the config directory if you prefer a different location than `~/.config`.
-
-## Built-in sync templates
-| Template | Description | Notes |
-| --- | --- | --- |
-| `paperless-ngx-export` | Mirrors the `./export` directory from the Paperless-ngx stack to `Backups/Paperless/export`. | Ships with `watch: true` (30s debounce) for near-real-time exports. |
-| `photo-drop-upload` | Watches `~/Pictures/ToProton` and uploads new files into `Shares/Photos`. | Convenient "drop to share" workflow. |
-| `shared-media-downloader` | Downloads `Shared/Family-Photos` into `~/ProtonShares/FamilyPhotos`. | One-shot mirror suitable for cron jobs. |
-
-Copy any template via `protondrive configs init <name>` and edit the resulting JSON to match your paths.
+Proton's official CLI stores cache, app data, logs, and credentials in its own OS-specific locations. See [Using Proton Drive CLI](https://proton.me/support/drive-cli) for the current upstream details.
 
 ## Development
-- Requires Go 1.21+ and a working rclone install for manual testing.
-- Source layout:
-  - `cmd/protondrive/main.go`: CLI and command implementations.
-  - `internal/customconfigs`: embedded sync templates.
-- Typical workflow:
-  ```bash
-  go fmt ./...
-  go vet ./...
-  go build ./cmd/protondrive
-  ```
-- Keep [`CHANGELOG.md`](CHANGELOG.md) updated when adding features.
 
-## Testing & QA
-Minimal unit tests cover helpers such as path expansion:
 ```bash
+go fmt ./...
+go vet ./...
 go test ./...
+go build ./cmd/protondrive
 ```
-Integration coverage relies on your local rclone installation. For CI or scripted checks, stub out rclone or run against a disposable Proton test account.
+
+Manual integration checks:
+
+```bash
+proton-drive version
+protondrive --backend proton status --details
+protondrive --backend rclone configure --from-proton-cli-session --skip-verify
+protondrive --backend rclone status --details
+```
 
 ## Troubleshooting
-- **`rclone` not found**: ensure `rclone` is on `$PATH`; the CLI checks via `exec.LookPath` before running commands.
-- **Mounts never become ready**: rerun with `protondrive mount --foreground` to see rclone logs, or increase `--ready-timeout`. Confirm `fusermount3` is installed.
-- **Auto-refresh keeps failing**: verify `PROTONDRIVE_VAULT_PASSPHRASE` matches the passphrase used when storing credentials. Delete `<remote>.creds` and rerun `configure --store-credentials` if unsure.
-- **Watch mode stops syncing**: watch is upload-only; downloads cannot use `--watch`. Ensure the local path exists before enabling watches.
-- **Permission denied**: mounts inherit directory permissions. Use `--allow-other` (with proper FUSE config) or mount inside your home directory.
 
-## Contributing
-Issues and PRs are welcome! Please:
-1. Open an issue describing the bug/feature when possible.
-2. Include reproduction steps or CLI logs (redacted) for bugs.
-3. Run `go fmt`, `go vet`, and `go test ./...` before submitting.
-4. Update the README/CHANGELOG when changing user-facing behavior.
+- `proton-drive not found`: install Proton's official CLI or set `--proton-drive-bin`.
+- Proton backend says it is not authenticated: run `protondrive --backend proton configure`.
+- Headless Proton CLI setup fails before writing a session: rclone must complete one real listing so it can cache `client_uid`, access token, refresh token, and key password. Check credentials, 2FA, network access, and Proton rate limits.
+- `--from-proton-cli-session` cannot find a session: run `protondrive --backend proton configure` first, then ensure macOS Keychain or Linux Secret Service is unlocked. On Linux, install `libsecret-tools` so `secret-tool` is available.
+- `rclone not found`: install rclone or set `--rclone-bin`; rclone is still required for mounts.
+- macOS mount fails with macFUSE errors: use the default `--mount-method auto` or explicitly pass `--mount-method webdav`; this avoids macFUSE.
+- Linux/FUSE mounts never become ready: rerun with `protondrive --backend rclone mount --foreground` and check FUSE/fusermount.
+- Proton upload/download prompts for conflicts: pass one of the conflict strategy flags for non-interactive automation.
 
 ## License
-GPLv3 – see [`LICENSE`](LICENSE) for the full text.
+
+GPLv3. See [LICENSE](LICENSE).
