@@ -29,6 +29,15 @@
   <url type="bugtracker">https://github.com/ColinMario/Protondrive-for-Linux/issues</url>
   <url type="vcs-browser">https://github.com/ColinMario/Protondrive-for-Linux</url>
   <releases>
+    <release version="0.2.1" date="2026-06-29">
+      <description>
+        <p>
+          Added Flatpak packaging metadata, vendored Go dependencies for
+          offline Flatpak builds, and host-tool forwarding for proton-drive and
+          rclone inside the Flatpak sandbox.
+        </p>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-06-29">
       <description>
         <p>
