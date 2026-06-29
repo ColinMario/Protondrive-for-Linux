@@ -238,6 +238,52 @@ func TestChooseMountMethod(t *testing.T) {
 	}
 }
 
+func TestConfigureRemoteIncludesMailboxPassword(t *testing.T) {
+	tmp := t.TempDir()
+	fakeRclone := filepath.Join(tmp, "rclone")
+	logPath := filepath.Join(tmp, "rclone.log")
+	script := `#!/bin/sh
+if [ "$1" = "obscure" ]; then
+  printf 'obscured-%s\n' "$2"
+  exit 0
+fi
+if [ "$1" = "config" ] && [ "$2" = "delete" ]; then
+  exit 0
+fi
+printf '%s\n' "$*" >> "$RCLONE_FAKE_LOG"
+`
+	if err := os.WriteFile(fakeRclone, []byte(script), 0o755); err != nil {
+		t.Fatalf("failed to write fake rclone: %v", err)
+	}
+	t.Setenv("RCLONE_FAKE_LOG", logPath)
+
+	previous := currentOptions
+	currentOptions.RcloneBin = fakeRclone
+	t.Cleanup(func() {
+		currentOptions = previous
+	})
+
+	if err := configureRemote("protondrive", "alice@proton.me", "loginpass", "mailpass", "123456", true); err != nil {
+		t.Fatalf("configureRemote returned error: %v", err)
+	}
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("failed to read fake rclone log: %v", err)
+	}
+	got := string(logData)
+	for _, want := range []string{
+		"config create protondrive protondrive",
+		"username=alice@proton.me",
+		"password=obscured-loginpass",
+		"mailbox_password=obscured-mailpass",
+		"2fa=123456",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("rclone command did not contain %q: %s", want, got)
+		}
+	}
+}
+
 func TestProtonDrivePath(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -269,6 +315,12 @@ func TestBackendHintDetection(t *testing.T) {
 	}
 	if !configureArgsRequireRclone([]string{"--store-credentials"}) {
 		t.Fatal("configureArgsRequireRclone did not detect --store-credentials")
+	}
+	if !configureArgsRequireRclone([]string{"--mailbox-password", "secret"}) {
+		t.Fatal("configureArgsRequireRclone did not detect --mailbox-password")
+	}
+	if !configureArgsRequireRclone([]string{"--mailbox-password-stdin"}) {
+		t.Fatal("configureArgsRequireRclone did not detect --mailbox-password-stdin")
 	}
 	if !configureArgsRequireRclone([]string{"--from-proton-cli-session"}) {
 		t.Fatal("configureArgsRequireRclone did not detect --from-proton-cli-session")

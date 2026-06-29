@@ -167,6 +167,16 @@ Legacy rclone remote:
 protondrive --backend rclone configure --email alice@proton.me --store-credentials
 ```
 
+Two-password Proton accounts can pass the mailbox password explicitly:
+
+```bash
+{
+  printf '%s\n' "$PROTON_PASSWORD"
+  printf '%s\n' "$PROTON_MAILBOX_PASSWORD"
+} | protondrive --backend rclone configure --email alice@proton.me \
+    --password-stdin --mailbox-password-stdin --non-interactive
+```
+
 Browserless/headless setup for servers:
 
 ```bash
@@ -179,10 +189,12 @@ With 2FA and the local credential vault:
 ```bash
 {
   printf '%s\n' "$PROTON_PASSWORD"
+  printf '%s\n' "$PROTON_MAILBOX_PASSWORD"
   printf '%s\n' "$PROTON_2FA_CODE"
   printf '%s\n' "$PROTONDRIVE_VAULT_PASSPHRASE"
 } | protondrive configure --headless --email alice@proton.me \
-    --password-stdin --twofa-stdin --store-credentials --vault-passphrase-stdin
+    --password-stdin --mailbox-password-stdin --twofa-stdin \
+    --store-credentials --vault-passphrase-stdin
 ```
 
 `--headless` never starts Proton's browser login. In `auto` mode it uses rclone's Proton password-auth flow to initialize cached Proton tokens, then writes a compatible official Proton CLI session into the OS secret store (`ch.proton.drive/drive-sdk-cli` / `auth-session`). That gives you both a working rclone mount remote and a browserless `proton-drive` CLI session for later `browse`/`sync` commands. The command behaves like `--non-interactive` and fails if required values are missing. Use `--skip-verify` only when `proton-drive` is not installed yet; rclone still performs one real listing so the session tokens can be captured.
@@ -296,7 +308,7 @@ protondrive --backend proton configure
 protondrive --backend rclone configure --from-proton-cli-session
 ```
 
-Password-based rclone configuration remains available with `protondrive --backend rclone configure --email alice@proton.me --store-credentials`.
+Password-based rclone configuration remains available with `protondrive --backend rclone configure --email alice@proton.me --store-credentials`. For two-password Proton accounts, add `--mailbox-password` or `--mailbox-password-stdin`.
 For fully browserless servers, use `protondrive configure --headless --email ... --password-stdin`; it writes the official Proton CLI session and the rclone remote in one run.
 
 Install and start a persistent mount:

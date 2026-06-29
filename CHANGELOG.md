@@ -3,6 +3,9 @@
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Added
+- Added rclone configuration support for Proton two-password accounts via `--mailbox-password` and `--mailbox-password-stdin`.
+- Added encrypted credential-vault storage and refresh support for the optional Proton mailbox password.
 
 ## [0.2.2] - 2026-06-29
 ### Added
