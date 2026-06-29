@@ -23,7 +23,7 @@ The upstream Proton Drive SDK is still evolving and Proton documents direct SDK 
 ## Requirements
 
 - Go 1.21+ to build this wrapper.
-- Proton's official Drive CLI for the modern backend. Download it from [proton.me/download/drive/cli](https://proton.me/download/drive/cli/index.html) and place `proton-drive` on your `PATH`.
+- Proton's official Drive CLI for the modern backend. You can install it manually from [proton.me/download/drive/cli](https://proton.me/download/drive/cli/index.html) or run `protondrive bootstrap --proton-drive`.
 - A Proton account and browser access for `proton-drive auth login`.
 - Linux secret storage for Proton's CLI sessions, for example libsecret with GNOME Keyring or KWallet.
 - Linux `secret-tool` from `libsecret-tools` when importing Proton's official CLI session into rclone.
@@ -40,7 +40,15 @@ go build ./cmd/protondrive
 sudo install -m 0755 protondrive /usr/local/bin/protondrive
 ```
 
-Install Proton's official CLI separately:
+Install helper dependencies automatically:
+
+```bash
+# Downloads proton-drive with Proton's SHA-512 checksum verification.
+# Downloads rclone from its GitHub release and verifies SHA256SUMS.
+protondrive bootstrap --all --yes
+```
+
+Or install Proton's official CLI manually:
 
 ```bash
 # Example for Linux x64. Verify the current version and checksum on Proton's download page.
@@ -74,7 +82,14 @@ Run:
 
 ```bash
 flatpak run io.github.ColinMario.ProtondriveForLinux --help
+flatpak run io.github.ColinMario.ProtondriveForLinux bootstrap --all --yes
 ```
+
+`bootstrap` installs `proton-drive` and rclone into a managed per-user directory
+and future runs use those binaries automatically if they are not available on
+the host `PATH`. Proton's binary is resolved from Proton's download index and
+verified against Proton's published SHA-512 checksum. rclone is resolved from
+the current upstream release and verified against the release `SHA256SUMS`.
 
 See [packaging/flatpak/README.md](packaging/flatpak/README.md) for packaging notes and Flathub submission details.
 

@@ -141,6 +141,83 @@ func TestNormalizeMountMethod(t *testing.T) {
 	}
 }
 
+func TestProtonCLIPlatform(t *testing.T) {
+	tests := []struct {
+		goos    string
+		goarch  string
+		want    string
+		wantErr bool
+	}{
+		{goos: "linux", goarch: "amd64", want: "linux/x64"},
+		{goos: "linux", goarch: "arm64", want: "linux/arm64"},
+		{goos: "darwin", goarch: "amd64", want: "macos/x64"},
+		{goos: "darwin", goarch: "arm64", want: "macos/arm64"},
+		{goos: "freebsd", goarch: "amd64", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.goos+"-"+tt.goarch, func(t *testing.T) {
+			got, err := protonCLIPlatform(tt.goos, tt.goarch)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("protonCLIPlatform returned nil error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("protonCLIPlatform returned error: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("protonCLIPlatform = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseProtonCLIAssets(t *testing.T) {
+	html := `<table><tbody>
+	<tr>
+		<td>linux/x64</td>
+		<td><a href="https://proton.me/download/drive/cli/0.4.6/linux-x64/proton-drive">download</a></td>
+		<td><code>d187409932742e6fdc6aae2995998f4c89ea51999283395bc8d0bdc5343a79d31bf5a485d5af9adf3b7909fc92f2d2ef0b133edc4939d5faf1d096eb744425bb</code></td>
+	</tr>
+	</tbody></table>`
+	assets := parseProtonCLIAssets(html)
+	asset, ok := assets["linux/x64"]
+	if !ok {
+		t.Fatal("linux/x64 asset was not parsed")
+	}
+	if asset.URL != "https://proton.me/download/drive/cli/0.4.6/linux-x64/proton-drive" {
+		t.Fatalf("URL = %q", asset.URL)
+	}
+	if len(asset.SHA512) != 128 {
+		t.Fatalf("SHA512 length = %d", len(asset.SHA512))
+	}
+}
+
+func TestRclonePlatform(t *testing.T) {
+	goos, goarch, err := rclonePlatform("darwin", "arm64")
+	if err != nil {
+		t.Fatalf("rclonePlatform returned error: %v", err)
+	}
+	if goos != "osx" || goarch != "arm64" {
+		t.Fatalf("rclonePlatform = %s/%s, want osx/arm64", goos, goarch)
+	}
+}
+
+func TestFetchRcloneChecksumFromText(t *testing.T) {
+	body := strings.Join([]string{
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  rclone-v1.74.3-linux-amd64.zip",
+		"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  rclone-v1.74.3-linux-arm64.zip",
+	}, "\n")
+	got, err := rcloneChecksumFromText(body, "rclone-v1.74.3-linux-arm64.zip")
+	if err != nil {
+		t.Fatalf("rcloneChecksumFromText returned error: %v", err)
+	}
+	if got != "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" {
+		t.Fatalf("checksum = %q", got)
+	}
+}
+
 func TestChooseMountMethod(t *testing.T) {
 	if chooseMountMethod(mountMethodFuse, false) != mountMethodFuse {
 		t.Fatal("explicit fuse mount method was not preserved")

@@ -1,12 +1,16 @@
 package main
 
 import (
+	"archive/zip"
 	"bufio"
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -19,6 +23,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -38,6 +43,7 @@ const (
 	backendEnv         = "PROTONDRIVE_BACKEND"
 	protonDriveBinEnv  = "PROTONDRIVE_PROTON_BIN"
 	rcloneBinEnv       = "PROTONDRIVE_RCLONE_BIN"
+	managedBinDirEnv   = "PROTONDRIVE_MANAGED_BIN_DIR"
 
 	backendAuto   = "auto"
 	backendProton = "proton"
@@ -52,6 +58,10 @@ const (
 
 	protonCLISecretService = "ch.proton.drive/drive-sdk-cli"
 	protonCLISecretName    = "auth-session"
+
+	protonCLIDownloadIndex = "https://proton.me/download/drive/cli/index.html"
+	rcloneVersionURL       = "https://downloads.rclone.org/version.txt"
+	rcloneGitHubReleaseURL = "https://github.com/rclone/rclone/releases/download"
 )
 
 var procMountReplacer = strings.NewReplacer(
@@ -176,6 +186,8 @@ func main() {
 
 	cmd := args[0]
 	switch cmd {
+	case "bootstrap":
+		err = runBootstrap(args[1:])
 	case "configure":
 		err = runConfigure(options.Remote, args[1:])
 	case "status":
@@ -200,6 +212,9 @@ func main() {
 	}
 
 	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			os.Exit(0)
+		}
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
 	}
@@ -210,20 +225,28 @@ func defaultRuntimeOptions() runtimeOptions {
 	if backend == "" {
 		backend = backendAuto
 	}
-	protonBin := strings.TrimSpace(os.Getenv(protonDriveBinEnv))
-	if protonBin == "" {
-		protonBin = protonDriveDefaultBin
-	}
-	rcloneBin := strings.TrimSpace(os.Getenv(rcloneBinEnv))
-	if rcloneBin == "" {
-		rcloneBin = rcloneDefaultBin
-	}
 	return runtimeOptions{
 		Remote:         remoteDefault,
 		Backend:        backend,
-		ProtonDriveBin: protonBin,
-		RcloneBin:      rcloneBin,
+		ProtonDriveBin: defaultExternalBinary(protonDriveBinEnv, protonDriveDefaultBin),
+		RcloneBin:      defaultExternalBinary(rcloneBinEnv, rcloneDefaultBin),
 	}
+}
+
+func defaultExternalBinary(envName, defaultName string) string {
+	if value := strings.TrimSpace(os.Getenv(envName)); value != "" {
+		return value
+	}
+	if _, err := exec.LookPath(defaultName); err == nil {
+		return defaultName
+	}
+	if hostCommandAvailable(defaultName) {
+		return defaultName
+	}
+	if managed, ok := managedBinaryPath(defaultName); ok && isExecutable(managed) {
+		return managed
+	}
+	return defaultName
 }
 
 func parseGlobalArgs(args []string) (runtimeOptions, []string, error) {
@@ -449,6 +472,455 @@ func binaryForBackend(name string) string {
 	default:
 		return ""
 	}
+}
+
+type protonCLIAsset struct {
+	Platform string
+	URL      string
+	SHA512   string
+}
+
+type bootstrapOptions struct {
+	InstallProton         bool
+	InstallRclone         bool
+	InstallDir            string
+	Force                 bool
+	Yes                   bool
+	AllowUnverifiedRclone bool
+}
+
+func runBootstrap(args []string) error {
+	fs := flag.NewFlagSet("bootstrap", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+
+	installProton := fs.Bool("proton-drive", false, "Install Proton's official proton-drive CLI into the managed user bin directory")
+	installRclone := fs.Bool("rclone", false, "Install rclone into the managed user bin directory")
+	installAll := fs.Bool("all", false, "Install both proton-drive and rclone")
+	installDir := fs.String("install-dir", defaultManagedBinDir(), "Directory for managed dependency binaries")
+	force := fs.Bool("force", false, "Replace an existing managed binary")
+	yes := fs.Bool("yes", false, "Do not prompt before downloading executable dependencies")
+	allowUnverifiedRclone := fs.Bool("allow-unverified-rclone", false, "Allow rclone download if a release checksum cannot be verified")
+
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			printCommandUsage(fs)
+			return flag.ErrHelp
+		}
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("bootstrap does not accept positional arguments")
+	}
+
+	opts := bootstrapOptions{
+		InstallProton:         *installProton || *installAll,
+		InstallRclone:         *installRclone || *installAll,
+		InstallDir:            expandPath(*installDir),
+		Force:                 *force,
+		Yes:                   *yes,
+		AllowUnverifiedRclone: *allowUnverifiedRclone,
+	}
+	if !*installProton && !*installRclone && !*installAll {
+		opts.InstallProton = true
+		opts.InstallRclone = true
+	}
+
+	if err := confirmBootstrap(opts); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(opts.InstallDir, 0o755); err != nil {
+		return fmt.Errorf("failed to create managed bin directory: %w", err)
+	}
+
+	fmt.Printf("Managed dependency directory: %s\n", opts.InstallDir)
+	if opts.InstallProton {
+		if err := bootstrapProtonDrive(opts.InstallDir, opts.Force); err != nil {
+			return err
+		}
+	}
+	if opts.InstallRclone {
+		if err := bootstrapRclone(opts.InstallDir, opts.Force, opts.AllowUnverifiedRclone); err != nil {
+			return err
+		}
+	}
+
+	fmt.Println("Bootstrap complete.")
+	fmt.Printf("Future runs will use managed dependencies automatically when %s or %s are not available on PATH.\n", protonDriveDefaultBin, rcloneDefaultBin)
+	if insideFlatpak() {
+		fmt.Println("Flatpak mode detected: managed tools are stored in user data and can be launched through flatpak-spawn when needed.")
+	}
+	return nil
+}
+
+func confirmBootstrap(opts bootstrapOptions) error {
+	if opts.Yes {
+		return nil
+	}
+	tools := make([]string, 0, 2)
+	if opts.InstallProton {
+		tools = append(tools, "Proton Drive CLI")
+	}
+	if opts.InstallRclone {
+		tools = append(tools, "rclone")
+	}
+	if !term.IsTerminal(int(syscall.Stdin)) {
+		return errors.New("refusing to download executable dependencies without confirmation; rerun with --yes")
+	}
+	fmt.Fprintf(os.Stderr, "Download and install %s into %s? [y/N] ", strings.Join(tools, " and "), opts.InstallDir)
+	answer, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	switch strings.ToLower(strings.TrimSpace(answer)) {
+	case "y", "yes":
+		return nil
+	default:
+		return errors.New("bootstrap cancelled")
+	}
+}
+
+func bootstrapProtonDrive(installDir string, force bool) error {
+	target := filepath.Join(installDir, protonDriveDefaultBin)
+	if isExecutable(target) && !force {
+		fmt.Printf("proton-drive already installed: %s\n", target)
+		return nil
+	}
+
+	platform, err := protonCLIPlatform(runtime.GOOS, runtime.GOARCH)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Resolving Proton Drive CLI download for %s...\n", platform)
+	indexHTML, err := fetchURLBytes(protonCLIDownloadIndex, 2<<20)
+	if err != nil {
+		return fmt.Errorf("failed to read Proton Drive CLI download index: %w", err)
+	}
+	assets := parseProtonCLIAssets(string(indexHTML))
+	asset, ok := assets[platform]
+	if !ok {
+		return fmt.Errorf("Proton Drive CLI download index did not contain an asset for %s", platform)
+	}
+	if err := downloadVerifiedBinary(asset.URL, target, asset.SHA512, "sha512"); err != nil {
+		return fmt.Errorf("failed to install proton-drive: %w", err)
+	}
+	fmt.Printf("Installed proton-drive: %s\n", target)
+	return nil
+}
+
+func bootstrapRclone(installDir string, force, allowUnverified bool) error {
+	target := filepath.Join(installDir, rcloneDefaultBin)
+	if isExecutable(target) && !force {
+		fmt.Printf("rclone already installed: %s\n", target)
+		return nil
+	}
+
+	goos, goarch, err := rclonePlatform(runtime.GOOS, runtime.GOARCH)
+	if err != nil {
+		return err
+	}
+	version, err := fetchRcloneVersion()
+	if err != nil {
+		return err
+	}
+	archiveName := fmt.Sprintf("rclone-%s-%s-%s.zip", version, goos, goarch)
+	archiveURL := fmt.Sprintf("%s/%s/%s", rcloneGitHubReleaseURL, version, archiveName)
+	checksumURL := fmt.Sprintf("%s/%s/SHA256SUMS", rcloneGitHubReleaseURL, version)
+
+	fmt.Printf("Resolving rclone %s download for %s/%s...\n", version, goos, goarch)
+	expectedSHA256, checksumErr := fetchRcloneChecksum(checksumURL, archiveName)
+	if checksumErr != nil && !allowUnverified {
+		return fmt.Errorf("failed to verify rclone release checksum: %w; rerun with --allow-unverified-rclone only if you accept that risk", checksumErr)
+	}
+	if checksumErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: installing rclone without checksum verification: %v\n", checksumErr)
+	}
+
+	archivePath, err := downloadTempFile(archiveURL, installDir, "rclone-*.zip")
+	if err != nil {
+		return fmt.Errorf("failed to download rclone archive: %w", err)
+	}
+	defer os.Remove(archivePath)
+
+	if expectedSHA256 != "" {
+		if err := verifyFileChecksum(archivePath, expectedSHA256, "sha256"); err != nil {
+			return fmt.Errorf("rclone archive checksum verification failed: %w", err)
+		}
+	}
+	if err := extractBinaryFromZip(archivePath, rcloneDefaultBin, target); err != nil {
+		return fmt.Errorf("failed to extract rclone: %w", err)
+	}
+	fmt.Printf("Installed rclone: %s\n", target)
+	return nil
+}
+
+func protonCLIPlatform(goos, goarch string) (string, error) {
+	var osName string
+	switch goos {
+	case "linux":
+		osName = "linux"
+	case "darwin":
+		osName = "macos"
+	default:
+		return "", fmt.Errorf("Proton Drive CLI bootstrap is not supported on %s/%s", goos, goarch)
+	}
+	switch goarch {
+	case "amd64":
+		return osName + "/x64", nil
+	case "arm64":
+		return osName + "/arm64", nil
+	default:
+		return "", fmt.Errorf("Proton Drive CLI bootstrap is not supported on %s/%s", goos, goarch)
+	}
+}
+
+func parseProtonCLIAssets(html string) map[string]protonCLIAsset {
+	assets := make(map[string]protonCLIAsset)
+	rowPattern := regexp.MustCompile(`(?is)<tr>\s*<td>\s*([^<]+?)\s*</td>\s*<td>\s*<a\s+href="([^"]+)"[^>]*>.*?</a>\s*</td>\s*<td>\s*<code>\s*([0-9a-f]{128})\s*</code>\s*</td>\s*</tr>`)
+	for _, match := range rowPattern.FindAllStringSubmatch(html, -1) {
+		platform := strings.TrimSpace(match[1])
+		assets[platform] = protonCLIAsset{
+			Platform: platform,
+			URL:      strings.TrimSpace(match[2]),
+			SHA512:   strings.ToLower(strings.TrimSpace(match[3])),
+		}
+	}
+	return assets
+}
+
+func rclonePlatform(goos, goarch string) (string, string, error) {
+	switch goos {
+	case "linux":
+	case "darwin":
+		goos = "osx"
+	default:
+		return "", "", fmt.Errorf("rclone bootstrap is not supported on %s/%s", goos, goarch)
+	}
+	switch goarch {
+	case "amd64", "arm64":
+		return goos, goarch, nil
+	default:
+		return "", "", fmt.Errorf("rclone bootstrap is not supported on %s/%s", goos, goarch)
+	}
+}
+
+func fetchRcloneVersion() (string, error) {
+	body, err := fetchURLBytes(rcloneVersionURL, 256<<10)
+	if err != nil {
+		return "", fmt.Errorf("failed to read rclone version: %w", err)
+	}
+	fields := strings.Fields(strings.TrimSpace(string(body)))
+	if len(fields) < 2 || fields[0] != "rclone" || !strings.HasPrefix(fields[1], "v") {
+		return "", fmt.Errorf("unexpected rclone version response: %s", strings.TrimSpace(string(body)))
+	}
+	return fields[1], nil
+}
+
+func fetchRcloneChecksum(checksumURL, archiveName string) (string, error) {
+	body, err := fetchURLBytes(checksumURL, 2<<20)
+	if err != nil {
+		return "", err
+	}
+	sum, err := rcloneChecksumFromText(string(body), archiveName)
+	if err != nil {
+		return "", fmt.Errorf("%w in %s", err, checksumURL)
+	}
+	return sum, nil
+}
+
+func rcloneChecksumFromText(text, archiveName string) (string, error) {
+	for _, line := range strings.Split(text, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[1] == archiveName {
+			sum := strings.ToLower(strings.TrimSpace(fields[0]))
+			if len(sum) != 64 {
+				return "", fmt.Errorf("invalid SHA256 checksum for %s", archiveName)
+			}
+			return sum, nil
+		}
+	}
+	return "", fmt.Errorf("checksum for %s not found", archiveName)
+}
+
+func fetchURLBytes(rawURL string, limit int64) ([]byte, error) {
+	resp, err := httpClient().Get(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, fmt.Errorf("GET %s returned %s", rawURL, resp.Status)
+	}
+	var reader io.Reader = resp.Body
+	if limit > 0 {
+		reader = io.LimitReader(resp.Body, limit+1)
+	}
+	body, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, err
+	}
+	if limit > 0 && int64(len(body)) > limit {
+		return nil, fmt.Errorf("response exceeded %d bytes", limit)
+	}
+	return body, nil
+}
+
+func downloadVerifiedBinary(rawURL, target, expected, algorithm string) error {
+	temp, err := downloadTempFile(rawURL, filepath.Dir(target), filepath.Base(target)+"-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(temp)
+	if err := verifyFileChecksum(temp, expected, algorithm); err != nil {
+		return err
+	}
+	if err := os.Chmod(temp, 0o755); err != nil {
+		return err
+	}
+	return os.Rename(temp, target)
+}
+
+func downloadTempFile(rawURL, dir, pattern string) (string, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	temp, err := os.CreateTemp(dir, pattern)
+	if err != nil {
+		return "", err
+	}
+	tempPath := temp.Name()
+	defer temp.Close()
+
+	resp, err := httpClient().Get(rawURL)
+	if err != nil {
+		os.Remove(tempPath)
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		os.Remove(tempPath)
+		return "", fmt.Errorf("GET %s returned %s", rawURL, resp.Status)
+	}
+	if _, err := io.Copy(temp, resp.Body); err != nil {
+		os.Remove(tempPath)
+		return "", err
+	}
+	return tempPath, nil
+}
+
+func verifyFileChecksum(filePath, expected, algorithm string) error {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	var actual string
+	switch algorithm {
+	case "sha256":
+		hash := sha256.New()
+		if _, err := io.Copy(hash, file); err != nil {
+			return err
+		}
+		actual = hex.EncodeToString(hash.Sum(nil))
+	case "sha512":
+		hash := sha512.New()
+		if _, err := io.Copy(hash, file); err != nil {
+			return err
+		}
+		actual = hex.EncodeToString(hash.Sum(nil))
+	default:
+		return fmt.Errorf("unsupported checksum algorithm %q", algorithm)
+	}
+	if !strings.EqualFold(actual, expected) {
+		return fmt.Errorf("%s mismatch: got %s, want %s", algorithm, actual, strings.ToLower(expected))
+	}
+	return nil
+}
+
+func extractBinaryFromZip(archivePath, binaryName, target string) error {
+	reader, err := zip.OpenReader(archivePath)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+
+	for _, file := range reader.File {
+		if file.FileInfo().IsDir() || filepath.Base(file.Name) != binaryName {
+			continue
+		}
+		src, err := file.Open()
+		if err != nil {
+			return err
+		}
+		defer src.Close()
+
+		temp, err := os.CreateTemp(filepath.Dir(target), filepath.Base(target)+"-*")
+		if err != nil {
+			return err
+		}
+		tempPath := temp.Name()
+		_, copyErr := io.Copy(temp, src)
+		closeErr := temp.Close()
+		if copyErr != nil {
+			os.Remove(tempPath)
+			return copyErr
+		}
+		if closeErr != nil {
+			os.Remove(tempPath)
+			return closeErr
+		}
+		if err := os.Chmod(tempPath, 0o755); err != nil {
+			os.Remove(tempPath)
+			return err
+		}
+		return os.Rename(tempPath, target)
+	}
+	return fmt.Errorf("%s not found in %s", binaryName, archivePath)
+}
+
+func httpClient() *http.Client {
+	return &http.Client{Timeout: 5 * time.Minute}
+}
+
+func defaultManagedBinDir() string {
+	if override := strings.TrimSpace(os.Getenv(managedBinDirEnv)); override != "" {
+		return expandPath(override)
+	}
+	if runtime.GOOS == "linux" {
+		if dataHome := strings.TrimSpace(os.Getenv("XDG_DATA_HOME")); dataHome != "" {
+			return filepath.Join(expandPath(dataHome), "protondrive", "bin")
+		}
+		if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+			return filepath.Join(home, ".local", "share", "protondrive", "bin")
+		}
+	}
+	if runtime.GOOS == "darwin" {
+		if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+			return filepath.Join(home, "Library", "Application Support", "protondrive", "bin")
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		return filepath.Join(home, ".local", "share", "protondrive", "bin")
+	}
+	return filepath.Join(".", ".protondrive", "bin")
+}
+
+func managedBinaryPath(bin string) (string, bool) {
+	base := filepath.Base(strings.TrimSpace(bin))
+	switch base {
+	case protonDriveDefaultBin, rcloneDefaultBin:
+	default:
+		return "", false
+	}
+	return filepath.Join(defaultManagedBinDir(), base), true
+}
+
+func isExecutable(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	return info.Mode()&0o111 != 0
 }
 
 func runConfigure(remote string, args []string) error {
@@ -3303,6 +3775,10 @@ func externalCommandAvailable(bin string) bool {
 }
 
 func externalCommand(bin string, args ...string) *exec.Cmd {
+	if insideFlatpak() && filepath.IsAbs(bin) && hostCommandAvailable(bin) {
+		spawnArgs := append([]string{"--host", bin}, args...)
+		return exec.Command("flatpak-spawn", spawnArgs...)
+	}
 	if _, err := exec.LookPath(bin); err == nil {
 		return exec.Command(bin, args...)
 	}
@@ -3339,14 +3815,14 @@ func insideFlatpak() bool {
 
 func ensureRclone() error {
 	if !externalCommandAvailable(currentOptions.RcloneBin) {
-		return fmt.Errorf("%s not found in PATH. Install rclone from https://rclone.org/install/ or set --rclone-bin", currentOptions.RcloneBin)
+		return fmt.Errorf("%s not found in PATH. Run 'protondrive bootstrap --rclone --yes', install rclone from https://rclone.org/install/, or set --rclone-bin", currentOptions.RcloneBin)
 	}
 	return nil
 }
 
 func ensureProtonDrive() error {
 	if !externalCommandAvailable(currentOptions.ProtonDriveBin) {
-		return fmt.Errorf("%s not found in PATH. Install the official Proton Drive CLI from https://proton.me/download/drive/cli/index.html or set --proton-drive-bin", currentOptions.ProtonDriveBin)
+		return fmt.Errorf("%s not found in PATH. Run 'protondrive bootstrap --proton-drive --yes', install the official Proton Drive CLI from https://proton.me/download/drive/cli/index.html, or set --proton-drive-bin", currentOptions.ProtonDriveBin)
 	}
 	return nil
 }
@@ -3601,6 +4077,7 @@ Global options:
   --rclone-bin path       rclone binary (default: rclone; env PROTONDRIVE_RCLONE_BIN).
 
 Commands:
+  bootstrap    Download verified proton-drive/rclone helper binaries into a managed user directory.
   configure    Sign in with Proton's CLI or create/update an rclone remote.
   status       Show backend availability and authentication status.
   browse       List directories (default) or files (--files) under a path.

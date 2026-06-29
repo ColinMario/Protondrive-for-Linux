@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-06-29
+### Added
+- Added `protondrive bootstrap` to download helper dependencies into a managed user directory with checksum verification.
+- Added automatic discovery of managed `proton-drive` and `rclone` binaries when they are not available on `PATH` or through the Flatpak host.
+
+### Changed
+- Missing dependency errors now point to the bootstrap command as the fastest setup path.
+
 ## [0.2.1] - 2026-06-29
 ### Added
 - Added Flatpak packaging metadata for `io.github.ColinMario.ProtondriveForLinux`, including AppStream metadata, a desktop entry, and a neutral project icon.
