@@ -107,6 +107,32 @@ func TestNormalizeBackend(t *testing.T) {
 	}
 }
 
+func TestHTTPClientAllowsSlowReleaseDownloads(t *testing.T) {
+	if got := httpClient().Timeout; got < 30*time.Minute {
+		t.Fatalf("http client timeout = %s, want at least 30m for slow release assets", got)
+	}
+}
+
+func TestFlatpakHostSpawnArgsForwardsToolEnvironment(t *testing.T) {
+	t.Setenv("RCLONE_CONFIG", "/tmp/rclone.conf")
+	t.Setenv("PROTON_DRIVE_CACHE_DIR", "/tmp/proton-cache")
+
+	args := flatpakHostSpawnArgs("/usr/bin/rclone", "lsd", "protondrive:")
+	text := strings.Join(args, "\n")
+	for _, want := range []string{
+		"--host",
+		"--env=RCLONE_CONFIG=/tmp/rclone.conf",
+		"--env=PROTON_DRIVE_CACHE_DIR=/tmp/proton-cache",
+		"/usr/bin/rclone",
+		"lsd",
+		"protondrive:",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("flatpakHostSpawnArgs missing %q: %#v", want, args)
+		}
+	}
+}
+
 func TestNormalizeMountMethod(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -242,12 +268,16 @@ func TestConfigureRemoteIncludesMailboxPassword(t *testing.T) {
 	tmp := t.TempDir()
 	fakeRclone := filepath.Join(tmp, "rclone")
 	logPath := filepath.Join(tmp, "rclone.log")
+	configPath := filepath.Join(tmp, "rclone.conf")
 	script := `#!/bin/sh
 if [ "$1" = "obscure" ]; then
-  printf 'obscured-%s\n' "$2"
+  read secret
+  printf 'obscure args: %s\n' "$*" >> "$RCLONE_FAKE_LOG"
+  printf 'obscured-%s\n' "$secret"
   exit 0
 fi
-if [ "$1" = "config" ] && [ "$2" = "delete" ]; then
+if [ "$1" = "config" ] && [ "$2" = "file" ]; then
+  printf 'Configuration file is stored at:\n%s\n' "$RCLONE_CONFIG"
   exit 0
 fi
 printf '%s\n' "$*" >> "$RCLONE_FAKE_LOG"
@@ -256,6 +286,7 @@ printf '%s\n' "$*" >> "$RCLONE_FAKE_LOG"
 		t.Fatalf("failed to write fake rclone: %v", err)
 	}
 	t.Setenv("RCLONE_FAKE_LOG", logPath)
+	t.Setenv("RCLONE_CONFIG", configPath)
 
 	previous := currentOptions
 	currentOptions.RcloneBin = fakeRclone
@@ -271,15 +302,24 @@ printf '%s\n' "$*" >> "$RCLONE_FAKE_LOG"
 		t.Fatalf("failed to read fake rclone log: %v", err)
 	}
 	got := string(logData)
+	if strings.Contains(got, "loginpass") || strings.Contains(got, "mailpass") || strings.Contains(got, "123456") {
+		t.Fatalf("secret leaked through rclone process arguments: %s", got)
+	}
+	configData, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("failed to read rclone config: %v", err)
+	}
+	configText := string(configData)
 	for _, want := range []string{
-		"config create protondrive protondrive",
-		"username=alice@proton.me",
-		"password=obscured-loginpass",
-		"mailbox_password=obscured-mailpass",
-		"2fa=123456",
+		"[protondrive]",
+		"type = protondrive",
+		"username = alice@proton.me",
+		"password = obscured-loginpass",
+		"mailbox_password = obscured-mailpass",
+		"2fa = 123456",
 	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("rclone command did not contain %q: %s", want, got)
+		if !strings.Contains(configText, want) {
+			t.Fatalf("rclone config did not contain %q: %s", want, configText)
 		}
 	}
 }
@@ -339,6 +379,27 @@ func TestBackendHintDetection(t *testing.T) {
 	}
 	if !syncArgsRequireRclone([]string{"--"}) {
 		t.Fatal("syncArgsRequireRclone did not detect passthrough marker")
+	}
+}
+
+func TestAutoSyncDoesNotSilentlyFallbackToRclone(t *testing.T) {
+	previous := currentOptions
+	currentOptions = runtimeOptions{
+		Remote:         remoteDefault,
+		Backend:        backendAuto,
+		ProtonDriveBin: filepath.Join(t.TempDir(), "missing-proton-drive"),
+		RcloneBin:      filepath.Join(t.TempDir(), "missing-rclone"),
+	}
+	t.Cleanup(func() {
+		currentOptions = previous
+	})
+
+	_, err := resolveSyncBackend(nil, nil, false, false, nil)
+	if err == nil {
+		t.Fatal("resolveSyncBackend returned nil error")
+	}
+	if !strings.Contains(err.Error(), "does not fall back to rclone") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -530,6 +591,85 @@ func TestPersistentMountStartArgs(t *testing.T) {
 	}
 }
 
+func TestPersistentMountRecordsStateAndRemovePersistIsIdempotent(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("persistent mount services are linux-specific")
+	}
+
+	tmp := t.TempDir()
+	fakeRclone := filepath.Join(tmp, "rclone")
+	fakeSystemctl := filepath.Join(tmp, "systemctl")
+	rcloneScript := `#!/bin/sh
+if [ "$1" = "lsd" ]; then
+  exit 0
+fi
+exit 0
+`
+	systemctlScript := `#!/bin/sh
+exit 0
+`
+	if err := os.WriteFile(fakeRclone, []byte(rcloneScript), 0o755); err != nil {
+		t.Fatalf("failed to write fake rclone: %v", err)
+	}
+	if err := os.WriteFile(fakeSystemctl, []byte(systemctlScript), 0o755); err != nil {
+		t.Fatalf("failed to write fake systemctl: %v", err)
+	}
+
+	t.Setenv("PATH", tmp+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, "config"))
+
+	previous := currentOptions
+	currentOptions = runtimeOptions{
+		Remote:         remoteDefault,
+		Backend:        backendRclone,
+		ProtonDriveBin: filepath.Join(tmp, "proton-drive"),
+		RcloneBin:      fakeRclone,
+	}
+	t.Cleanup(func() {
+		currentOptions = previous
+	})
+
+	mountPoint := filepath.Join(tmp, "mnt")
+	if err := runMount(remoteDefault, []string{
+		mountPoint,
+		"--persist",
+		"--persist-manager", persistentMountManagerSystemd,
+		"--persist-name", "audit-main",
+		"--remote-path", "Backups",
+	}); err != nil {
+		t.Fatalf("runMount --persist returned error: %v", err)
+	}
+
+	state, err := loadRemoteState(remoteDefault)
+	if err != nil {
+		t.Fatalf("failed to load remote state: %v", err)
+	}
+	if len(state.Mounts) != 1 || !state.Mounts[0].Attached {
+		t.Fatalf("persistent mount was not recorded as attached: %#v", state.Mounts)
+	}
+	if state.Mounts[0].RemotePath != "protondrive:Backups" {
+		t.Fatalf("remote path = %q", state.Mounts[0].RemotePath)
+	}
+
+	if err := runUnmount(remoteDefault, []string{
+		mountPoint,
+		"--remove-persist",
+		"--persist-manager", persistentMountManagerSystemd,
+		"--persist-name", "audit-main",
+		"--force",
+	}); err != nil {
+		t.Fatalf("runUnmount --remove-persist returned error for unmounted path: %v", err)
+	}
+
+	state, err = loadRemoteState(remoteDefault)
+	if err != nil {
+		t.Fatalf("failed to reload remote state: %v", err)
+	}
+	if len(state.Mounts) != 1 || state.Mounts[0].Attached {
+		t.Fatalf("persistent mount was not detached after remove-persist: %#v", state.Mounts)
+	}
+}
+
 func TestOpenRCMountService(t *testing.T) {
 	service := openRCMountService("/sbin/openrc-run", "protondrive-mount-main-drive", "/home/alice/.local/share/protondrive/openrc/start.sh", "/home/alice/.local/share/protondrive/openrc/stop.sh")
 	for _, want := range []string{
@@ -571,6 +711,8 @@ remote = keep:
 		"type":                   "protondrive",
 		"username":               "proton-cli-session",
 		"password":               "obscured-placeholder",
+		"mailbox_password":       "obscured-mailbox",
+		"2fa":                    "123456",
 		"client_uid":             "uid-123",
 		"client_access_token":    "access-token",
 		"client_refresh_token":   "refresh-token",
@@ -593,6 +735,8 @@ remote = keep:
 		"type = protondrive",
 		"username = proton-cli-session",
 		"password = obscured-placeholder",
+		"mailbox_password = obscured-mailbox",
+		"2fa = 123456",
 		"client_uid = uid-123",
 		"client_access_token = access-token",
 		"client_refresh_token = refresh-token",

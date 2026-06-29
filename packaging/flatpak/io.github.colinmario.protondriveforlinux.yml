@@ -1,4 +1,4 @@
-id: io.github.ColinMario.ProtondriveForLinux
+id: io.github.colinmario.protondriveforlinux
 runtime: org.freedesktop.Platform
 runtime-version: "24.08"
 sdk: org.freedesktop.Sdk
@@ -26,9 +26,9 @@ modules:
     build-commands:
       - go build -trimpath -ldflags="-s -w" -o protondrive ./cmd/protondrive
       - install -Dm755 protondrive /app/bin/protondrive
-      - install -Dm644 packaging/flatpak/io.github.ColinMario.ProtondriveForLinux.metainfo.xml /app/share/metainfo/io.github.ColinMario.ProtondriveForLinux.metainfo.xml
-      - install -Dm644 packaging/flatpak/io.github.ColinMario.ProtondriveForLinux.desktop /app/share/applications/io.github.ColinMario.ProtondriveForLinux.desktop
-      - install -Dm644 packaging/flatpak/io.github.ColinMario.ProtondriveForLinux.svg /app/share/icons/hicolor/scalable/apps/io.github.ColinMario.ProtondriveForLinux.svg
+      - install -Dm644 packaging/flatpak/io.github.colinmario.protondriveforlinux.metainfo.xml /app/share/metainfo/io.github.colinmario.protondriveforlinux.metainfo.xml
+      - install -Dm644 packaging/flatpak/io.github.colinmario.protondriveforlinux.desktop /app/share/applications/io.github.colinmario.protondriveforlinux.desktop
+      - install -Dm644 packaging/flatpak/io.github.colinmario.protondriveforlinux.svg /app/share/icons/hicolor/scalable/apps/io.github.colinmario.protondriveforlinux.svg
     sources:
       - type: dir
         path: ../..

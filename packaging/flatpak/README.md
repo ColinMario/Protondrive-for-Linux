@@ -20,26 +20,26 @@ Build from the repository root:
 
 ```bash
 flatpak-builder --force-clean --user --install-deps-from=flathub \
-  build-dir packaging/flatpak/io.github.ColinMario.ProtondriveForLinux.yml
+  build-dir packaging/flatpak/io.github.colinmario.protondriveforlinux.yml
 ```
 
 Install locally:
 
 ```bash
 flatpak-builder --user --install --force-clean --install-deps-from=flathub \
-  build-dir packaging/flatpak/io.github.ColinMario.ProtondriveForLinux.yml
+  build-dir packaging/flatpak/io.github.colinmario.protondriveforlinux.yml
 ```
 
 Run:
 
 ```bash
-flatpak run io.github.ColinMario.ProtondriveForLinux --help
+flatpak run io.github.colinmario.protondriveforlinux --help
 ```
 
 Bootstrap helper tools after installation:
 
 ```bash
-flatpak run io.github.ColinMario.ProtondriveForLinux bootstrap --all --yes
+flatpak run io.github.colinmario.protondriveforlinux bootstrap --all --yes
 ```
 
 This downloads Proton's official `proton-drive` binary from Proton's download
@@ -69,7 +69,7 @@ are not available inside the Flatpak sandbox.
 
 ## Notes for Flathub
 
-- The app ID is `io.github.ColinMario.ProtondriveForLinux`.
+- The app ID is `io.github.colinmario.protondriveforlinux`.
 - The manifest uses `-mod=vendor`; keep `vendor/` up to date with
   `go mod vendor` before submitting or tagging Flatpak builds.
 - The package is intentionally not branded as an official Proton package.

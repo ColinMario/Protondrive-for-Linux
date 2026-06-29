@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-06-29
+### Fixed
+- Prevented `auto` sync from silently falling back to `rclone sync` when Proton's official CLI is unavailable, avoiding unintended mirror deletion semantics.
+- Avoided passing Proton credentials through rclone process arguments during configuration.
+- Fixed Flatpak host-tool environment forwarding so host rclone and proton-drive can use the intended config and cache paths.
+- Fixed Flatpak unmount handling by routing host unmount helpers through `flatpak-spawn --host`.
+- Made persistent mount removal idempotent when the user service is already stopped.
+- Increased bootstrap download timeout for slow GitHub release asset downloads while retaining download and archive size limits.
+
+### Changed
+- Renamed the Flatpak app ID and metadata files to the lowercase ID `io.github.colinmario.protondriveforlinux`.
+
 ## [0.2.4] - 2026-06-29
 ### Added
 - Added OpenRC user-service support for persistent Linux mounts via `--persist-manager openrc`.
@@ -23,7 +35,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [0.2.1] - 2026-06-29
 ### Added
-- Added Flatpak packaging metadata for `io.github.ColinMario.ProtondriveForLinux`, including AppStream metadata, a desktop entry, and a neutral project icon.
+- Added Flatpak packaging metadata for `io.github.colinmario.protondriveforlinux`, including AppStream metadata, a desktop entry, and a neutral project icon.
 - Added vendored Go dependencies so Flatpak builds can run with `-mod=vendor` and without fetching Go modules during the build.
 
 ### Changed

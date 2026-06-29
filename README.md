@@ -68,21 +68,21 @@ Build locally:
 ```bash
 flatpak install flathub org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08 org.freedesktop.Sdk.Extension.golang//24.08
 flatpak-builder --force-clean --user --install-deps-from=flathub \
-  build-dir packaging/flatpak/io.github.ColinMario.ProtondriveForLinux.yml
+  build-dir packaging/flatpak/io.github.colinmario.protondriveforlinux.yml
 ```
 
 Install locally:
 
 ```bash
 flatpak-builder --user --install --force-clean --install-deps-from=flathub \
-  build-dir packaging/flatpak/io.github.ColinMario.ProtondriveForLinux.yml
+  build-dir packaging/flatpak/io.github.colinmario.protondriveforlinux.yml
 ```
 
 Run:
 
 ```bash
-flatpak run io.github.ColinMario.ProtondriveForLinux --help
-flatpak run io.github.ColinMario.ProtondriveForLinux bootstrap --all --yes
+flatpak run io.github.colinmario.protondriveforlinux --help
+flatpak run io.github.colinmario.protondriveforlinux bootstrap --all --yes
 ```
 
 `bootstrap` installs `proton-drive` and rclone into a managed per-user directory
@@ -259,6 +259,11 @@ Use rclone when you need exact rclone mirror semantics, `--dry-run`, or passthro
 protondrive --backend rclone sync ~/Documents --remote-path backups --dry-run
 protondrive --backend rclone sync ~/Documents --remote-path backups -- --delete-after
 ```
+
+In `auto` mode, simple upload/download transfers require Proton's official CLI.
+The wrapper does not silently fall back to `rclone sync` for those transfers,
+because `rclone sync` mirrors deletions into the destination. Pass
+`--backend rclone` explicitly when destructive mirror semantics are intended.
 
 Watch mode still works with both upload backends by rerunning the selected transfer after filesystem changes settle:
 

@@ -39,7 +39,7 @@ import (
 
 const (
 	remoteDefault      = "protondrive"
-	vaultPassphraseEnv = "PROTONDRIVE_VAULT_PASSPHRASE"
+	vaultPassphraseEnv = "PROTONDRIVE_VAULT_PASSPHRASE" // #nosec G101 -- environment variable name, not a hardcoded credential
 	backendEnv         = "PROTONDRIVE_BACKEND"
 	protonDriveBinEnv  = "PROTONDRIVE_PROTON_BIN"
 	rcloneBinEnv       = "PROTONDRIVE_RCLONE_BIN"
@@ -60,12 +60,15 @@ const (
 	protonDriveDefaultBin = "proton-drive"
 	rcloneDefaultBin      = "rclone"
 
-	protonCLISecretService = "ch.proton.drive/drive-sdk-cli"
+	protonCLISecretService = "ch.proton.drive/drive-sdk-cli" // #nosec G101 -- Secret Service identifier, not a hardcoded credential
 	protonCLISecretName    = "auth-session"
 
 	protonCLIDownloadIndex = "https://proton.me/download/drive/cli/index.html"
 	rcloneVersionURL       = "https://downloads.rclone.org/version.txt"
 	rcloneGitHubReleaseURL = "https://github.com/rclone/rclone/releases/download"
+
+	maxDependencyDownloadBytes = 512 << 20
+	dependencyDownloadTimeout  = 30 * time.Minute
 )
 
 var procMountReplacer = strings.NewReplacer(
@@ -415,7 +418,10 @@ func resolveSyncBackend(args []string, cfg *loadedSyncConfig, dryRun, noProgress
 	if isBackendAvailable(backendProton) {
 		return backendProton, nil
 	}
-	return requireBackend(backendRclone)
+	if err := ensureProtonDrive(); err != nil {
+		return "", fmt.Errorf("%w; auto sync does not fall back to rclone because rclone sync mirrors deletions. Install proton-drive or explicitly pass '--backend %s' if mirror semantics are intended", err, backendRclone)
+	}
+	return backendProton, nil
 }
 
 func configureArgsRequireRclone(args []string) bool {
@@ -532,7 +538,7 @@ func runBootstrap(args []string) error {
 	if err := confirmBootstrap(opts); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(opts.InstallDir, 0o755); err != nil {
+	if err := os.MkdirAll(opts.InstallDir, 0o755); err != nil { // #nosec G301 -- managed bin directory must be traversable to execute helpers
 		return fmt.Errorf("failed to create managed bin directory: %w", err)
 	}
 
@@ -602,7 +608,7 @@ func bootstrapProtonDrive(installDir string, force bool) error {
 	assets := parseProtonCLIAssets(string(indexHTML))
 	asset, ok := assets[platform]
 	if !ok {
-		return fmt.Errorf("Proton Drive CLI download index did not contain an asset for %s", platform)
+		return fmt.Errorf("proton-drive CLI download index did not contain an asset for %s", platform)
 	}
 	if err := downloadVerifiedBinary(asset.URL, target, asset.SHA512, "sha512"); err != nil {
 		return fmt.Errorf("failed to install proton-drive: %w", err)
@@ -665,7 +671,7 @@ func protonCLIPlatform(goos, goarch string) (string, error) {
 	case "darwin":
 		osName = "macos"
 	default:
-		return "", fmt.Errorf("Proton Drive CLI bootstrap is not supported on %s/%s", goos, goarch)
+		return "", fmt.Errorf("proton-drive CLI bootstrap is not supported on %s/%s", goos, goarch)
 	}
 	switch goarch {
 	case "amd64":
@@ -673,7 +679,7 @@ func protonCLIPlatform(goos, goarch string) (string, error) {
 	case "arm64":
 		return osName + "/arm64", nil
 	default:
-		return "", fmt.Errorf("Proton Drive CLI bootstrap is not supported on %s/%s", goos, goarch)
+		return "", fmt.Errorf("proton-drive CLI bootstrap is not supported on %s/%s", goos, goarch)
 	}
 }
 
@@ -752,7 +758,7 @@ func fetchURLBytes(rawURL string, limit int64) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, fmt.Errorf("GET %s returned %s", rawURL, resp.Status)
+		return nil, fmt.Errorf("get %s returned %s", rawURL, resp.Status)
 	}
 	var reader io.Reader = resp.Body
 	if limit > 0 {
@@ -777,14 +783,14 @@ func downloadVerifiedBinary(rawURL, target, expected, algorithm string) error {
 	if err := verifyFileChecksum(temp, expected, algorithm); err != nil {
 		return err
 	}
-	if err := os.Chmod(temp, 0o755); err != nil {
+	if err := os.Chmod(temp, 0o755); err != nil { // #nosec G302 -- downloaded helper binaries must be executable
 		return err
 	}
 	return os.Rename(temp, target)
 }
 
 func downloadTempFile(rawURL, dir, pattern string) (string, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil { // #nosec G301 -- helper download directory must be traversable for executable installation
 		return "", err
 	}
 	temp, err := os.CreateTemp(dir, pattern)
@@ -796,23 +802,29 @@ func downloadTempFile(rawURL, dir, pattern string) (string, error) {
 
 	resp, err := httpClient().Get(rawURL)
 	if err != nil {
-		os.Remove(tempPath)
+		_ = os.Remove(tempPath)
 		return "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		os.Remove(tempPath)
-		return "", fmt.Errorf("GET %s returned %s", rawURL, resp.Status)
+		_ = os.Remove(tempPath)
+		return "", fmt.Errorf("get %s returned %s", rawURL, resp.Status)
 	}
-	if _, err := io.Copy(temp, resp.Body); err != nil {
-		os.Remove(tempPath)
+	limited := io.LimitReader(resp.Body, maxDependencyDownloadBytes+1)
+	written, err := io.Copy(temp, limited)
+	if err != nil {
+		_ = os.Remove(tempPath)
 		return "", err
+	}
+	if written > maxDependencyDownloadBytes {
+		_ = os.Remove(tempPath)
+		return "", fmt.Errorf("download exceeded %d bytes", maxDependencyDownloadBytes)
 	}
 	return tempPath, nil
 }
 
 func verifyFileChecksum(filePath, expected, algorithm string) error {
-	file, err := os.Open(filePath)
+	file, err := os.Open(filePath) // #nosec G304 -- checksum verification opens the temporary file just downloaded by this process
 	if err != nil {
 		return err
 	}
@@ -857,24 +869,27 @@ func extractBinaryFromZip(archivePath, binaryName, target string) error {
 			return err
 		}
 		defer src.Close()
+		if file.UncompressedSize64 > uint64(maxDependencyDownloadBytes) {
+			return fmt.Errorf("%s in %s exceeded %d bytes", binaryName, archivePath, maxDependencyDownloadBytes)
+		}
 
 		temp, err := os.CreateTemp(filepath.Dir(target), filepath.Base(target)+"-*")
 		if err != nil {
 			return err
 		}
 		tempPath := temp.Name()
-		_, copyErr := io.Copy(temp, src)
+		_, copyErr := io.Copy(temp, src) // #nosec G110 -- archive member size is checked before extraction
 		closeErr := temp.Close()
 		if copyErr != nil {
-			os.Remove(tempPath)
+			_ = os.Remove(tempPath)
 			return copyErr
 		}
 		if closeErr != nil {
-			os.Remove(tempPath)
+			_ = os.Remove(tempPath)
 			return closeErr
 		}
-		if err := os.Chmod(tempPath, 0o755); err != nil {
-			os.Remove(tempPath)
+		if err := os.Chmod(tempPath, 0o755); err != nil { // #nosec G302 -- extracted helper binaries must be executable
+			_ = os.Remove(tempPath)
 			return err
 		}
 		return os.Rename(tempPath, target)
@@ -883,7 +898,7 @@ func extractBinaryFromZip(archivePath, binaryName, target string) error {
 }
 
 func httpClient() *http.Client {
-	return &http.Client{Timeout: 5 * time.Minute}
+	return &http.Client{Timeout: dependencyDownloadTimeout}
 }
 
 func defaultManagedBinDir() string {
@@ -1516,7 +1531,7 @@ func runSync(remote string, args []string) error {
 			return fmt.Errorf("local path '%s' must exist and be a directory", localAbs)
 		}
 	} else {
-		if err := os.MkdirAll(localAbs, 0o755); err != nil {
+		if err := os.MkdirAll(localAbs, 0o755); err != nil { // #nosec G301 -- user-selected download folder should be normally accessible
 			return fmt.Errorf("unable to create local folder '%s': %w", localAbs, err)
 		}
 	}
@@ -1559,7 +1574,7 @@ func runSync(remote string, args []string) error {
 	}
 
 	if hasProtonSyncFlags(*conflictStrategy, *fileConflictStrategy, *folderConflictStrategy, *skipThumbnails) {
-		return fmt.Errorf("Proton conflict and thumbnail flags require '--backend %s'", backendProton)
+		return fmt.Errorf("proton conflict and thumbnail flags require '--backend %s'", backendProton)
 	}
 	if err := ensureRemoteAuth(remote); err != nil {
 		return err
@@ -1785,7 +1800,7 @@ func runMount(remote string, args []string) error {
 	mountPoint := expandPath(remaining[0])
 	extra := remaining[1:]
 
-	if err := os.MkdirAll(mountPoint, 0o755); err != nil {
+	if err := os.MkdirAll(mountPoint, 0o755); err != nil { // #nosec G301 -- mount points are user-facing directories
 		return fmt.Errorf("unable to create mount point '%s': %w", mountPoint, err)
 	}
 
@@ -1821,7 +1836,11 @@ func runMount(remote string, args []string) error {
 			EnableLinger: *enableLinger,
 			RcloneBin:    currentOptions.RcloneBin,
 		}
-		return installPersistentMount(options)
+		if err := installPersistentMount(options); err != nil {
+			return err
+		}
+		recordMountAttach(remote, mountPoint, remotePath(remote, *remotePathFlag), mountMethodFuse, 0, "")
+		return nil
 	}
 	if mountMethod == mountMethodWebDAV {
 		if *foreground {
@@ -1941,7 +1960,7 @@ func runWebDAVMount(remote, mountPoint, remotePathFlag, cacheMode, cacheMaxAge, 
 		return err
 	}
 
-	mountCmd := exec.Command("mount_webdav", url, mountPoint)
+	mountCmd := exec.Command("mount_webdav", url, mountPoint) // #nosec G204 -- fixed macOS mount helper with localhost URL and user-selected mount point
 	mountCmd.Stdout = os.Stdout
 	mountCmd.Stderr = os.Stderr
 	if err := mountCmd.Run(); err != nil {
@@ -2051,7 +2070,7 @@ func installSystemdPersistentMount(options persistentMountOptions) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(unitDir, 0o755); err != nil {
+	if err := os.MkdirAll(unitDir, 0o755); err != nil { // #nosec G301 -- systemd user unit directory follows systemd conventions
 		return err
 	}
 	if err := os.MkdirAll(scriptDir, 0o700); err != nil {
@@ -2077,13 +2096,13 @@ func installSystemdPersistentMount(options persistentMountOptions) error {
 	unitPath := filepath.Join(unitDir, serviceName)
 
 	startArgs := persistentMountStartArgs(exe, rcloneBin, options)
-	if err := os.WriteFile(startScript, []byte(shellScript(startArgs)), 0o700); err != nil {
+	if err := os.WriteFile(startScript, []byte(shellScript(startArgs)), 0o700); err != nil { // #nosec G306 -- generated service start script must be executable
 		return err
 	}
-	if err := os.WriteFile(stopScript, []byte(unmountShellScript(options.MountPoint)), 0o700); err != nil {
+	if err := os.WriteFile(stopScript, []byte(unmountShellScript(options.MountPoint)), 0o700); err != nil { // #nosec G306 -- generated service stop script must be executable
 		return err
 	}
-	if err := os.WriteFile(unitPath, []byte(systemdMountUnit(serviceName, startScript, stopScript, options.MountPoint)), 0o644); err != nil {
+	if err := os.WriteFile(unitPath, []byte(systemdMountUnit(serviceName, startScript, stopScript, options.MountPoint)), 0o644); err != nil { // #nosec G306 -- systemd user unit files are conventionally readable
 		return err
 	}
 
@@ -2123,7 +2142,7 @@ func installOpenRCPersistentMount(options persistentMountOptions) error {
 		return err
 	}
 	if strings.TrimSpace(os.Getenv("XDG_RUNTIME_DIR")) == "" {
-		return errors.New("OpenRC user services require XDG_RUNTIME_DIR; run from an OpenRC user session before using --persist-manager openrc")
+		return errors.New("openrc user services require XDG_RUNTIME_DIR; run from an OpenRC user session before using --persist-manager openrc")
 	}
 
 	serviceName := persistentMountOpenRCServiceName(options.Remote, options.MountPoint, options.PersistName)
@@ -2131,10 +2150,10 @@ func installOpenRCPersistentMount(options persistentMountOptions) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(initDir, 0o755); err != nil {
+	if err := os.MkdirAll(initDir, 0o755); err != nil { // #nosec G301 -- OpenRC user init directory must be traversable by OpenRC
 		return err
 	}
-	if err := os.MkdirAll(runlevelDir, 0o755); err != nil {
+	if err := os.MkdirAll(runlevelDir, 0o755); err != nil { // #nosec G301 -- OpenRC user runlevel directory must be traversable by OpenRC
 		return err
 	}
 	if err := os.MkdirAll(scriptDir, 0o700); err != nil {
@@ -2159,13 +2178,13 @@ func installOpenRCPersistentMount(options persistentMountOptions) error {
 	servicePath := filepath.Join(initDir, serviceName)
 
 	startArgs := persistentMountStartArgs(exe, rcloneBin, options)
-	if err := os.WriteFile(startScript, []byte(shellScript(startArgs)), 0o700); err != nil {
+	if err := os.WriteFile(startScript, []byte(shellScript(startArgs)), 0o700); err != nil { // #nosec G306 -- generated service start script must be executable
 		return err
 	}
-	if err := os.WriteFile(stopScript, []byte(unmountShellScript(options.MountPoint)), 0o700); err != nil {
+	if err := os.WriteFile(stopScript, []byte(unmountShellScript(options.MountPoint)), 0o700); err != nil { // #nosec G306 -- generated service stop script must be executable
 		return err
 	}
-	if err := os.WriteFile(servicePath, []byte(openRCMountService(openRCRun, serviceName, startScript, stopScript)), 0o755); err != nil {
+	if err := os.WriteFile(servicePath, []byte(openRCMountService(openRCRun, serviceName, startScript, stopScript)), 0o755); err != nil { // #nosec G306 -- OpenRC service files must be executable
 		return err
 	}
 
@@ -2215,7 +2234,7 @@ func removeSystemdPersistentMount(remote, mountPoint, persistName string) {
 	if err != nil {
 		return
 	}
-	_ = exec.Command("systemctl", "--user", "disable", "--now", serviceName).Run()
+	_ = exec.Command("systemctl", "--user", "disable", "--now", serviceName).Run() // #nosec G204 -- fixed systemctl command with sanitized service name
 	_ = os.Remove(filepath.Join(unitDir, serviceName))
 	baseName := strings.TrimSuffix(serviceName, ".service")
 	_ = os.Remove(filepath.Join(scriptDir, baseName+".sh"))
@@ -2230,10 +2249,10 @@ func removeOpenRCPersistentMount(remote, mountPoint, persistName string) {
 		return
 	}
 	if rcService, err := findOpenRCBinary("rc-service"); err == nil {
-		_ = exec.Command(rcService, "--user", serviceName, "stop").Run()
+		_ = exec.Command(rcService, "--user", serviceName, "stop").Run() // #nosec G204 -- OpenRC binary is resolved from PATH/known system paths
 	}
 	if rcUpdate, err := findOpenRCBinary("rc-update"); err == nil {
-		_ = exec.Command(rcUpdate, "--user", "del", serviceName, "default").Run()
+		_ = exec.Command(rcUpdate, "--user", "del", serviceName, "default").Run() // #nosec G204 -- OpenRC binary is resolved from PATH/known system paths
 	}
 	_ = os.Remove(filepath.Join(initDir, serviceName))
 	_ = os.Remove(filepath.Join(scriptDir, serviceName+".sh"))
@@ -2468,7 +2487,7 @@ func systemdQuote(value string) string {
 }
 
 func runCommand(name string, args ...string) error {
-	cmd := exec.Command(name, args...)
+	cmd := exec.Command(name, args...) // #nosec G204,G702 -- internal helper for fixed service-manager commands
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -2554,6 +2573,11 @@ func runUnmount(remote string, args []string) error {
 		if err := removePersistentMount(remote, mountPoint, *persistName, *persistManager); err != nil {
 			return err
 		}
+		if mounted, err := isPathMounted(mountPoint); err == nil && !mounted {
+			recordMountDetach(remote, mountPoint)
+			fmt.Printf("%s is not mounted; persistent service was removed.\n", mountPoint)
+			return nil
+		}
 	}
 
 	candidates := unmountCommands(mountPoint, *force)
@@ -2567,11 +2591,11 @@ func runUnmount(remote string, args []string) error {
 		if len(candidate) == 0 {
 			continue
 		}
-		if _, err := exec.LookPath(candidate[0]); err != nil {
+		if !externalCommandAvailable(candidate[0]) {
 			continue
 		}
 		tried = append(tried, strings.Join(candidate, " "))
-		cmd := exec.Command(candidate[0], candidate[1:]...)
+		cmd := externalCommand(candidate[0], candidate[1:]...)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err == nil {
@@ -2757,30 +2781,34 @@ func configureRemote(remote, email, password, mailboxPassword, twofa string, qui
 	if !quiet {
 		fmt.Printf("Configuring rclone remote '%s'...\n", remote)
 	}
-	exec.Command(currentOptions.RcloneBin, "config", "delete", remote).Run()
 
-	obscuredPassword, err := runRcloneCapture("obscure", password)
+	obscuredPassword, err := obscureRcloneSecret(password)
 	if err != nil {
 		return fmt.Errorf("failed to process password: %w", err)
 	}
 
-	cmd := []string{
-		"config", "create", remote, "protondrive",
-		fmt.Sprintf("username=%s", email),
-		fmt.Sprintf("password=%s", strings.TrimSpace(obscuredPassword)),
+	values := map[string]string{
+		"type":     "protondrive",
+		"username": strings.TrimSpace(email),
+		"password": strings.TrimSpace(obscuredPassword),
 	}
 	if strings.TrimSpace(mailboxPassword) != "" {
-		obscuredMailboxPassword, err := runRcloneCapture("obscure", mailboxPassword)
+		obscuredMailboxPassword, err := obscureRcloneSecret(mailboxPassword)
 		if err != nil {
 			return fmt.Errorf("failed to process mailbox password: %w", err)
 		}
-		cmd = append(cmd, fmt.Sprintf("mailbox_password=%s", strings.TrimSpace(obscuredMailboxPassword)))
+		values["mailbox_password"] = strings.TrimSpace(obscuredMailboxPassword)
 	}
 	if strings.TrimSpace(twofa) != "" {
-		cmd = append(cmd, fmt.Sprintf("2fa=%s", twofa))
+		values["2fa"] = strings.TrimSpace(twofa)
 	}
-	if _, err := runRcloneCapture(cmd...); err != nil {
-		return fmt.Errorf("rclone config create failed: %w", err)
+
+	configPath, err := rcloneConfigFilePath()
+	if err != nil {
+		return err
+	}
+	if err := writeRcloneConfigSection(configPath, normalizedRemoteName(remote), values); err != nil {
+		return fmt.Errorf("rclone config update failed: %w", err)
 	}
 	if !quiet {
 		fmt.Println("Remote saved successfully.")
@@ -2810,7 +2838,7 @@ func configureRemoteFromProtonCLISession(remote string, verify bool) error {
 		return errors.New("official Proton Drive CLI session is incomplete; run 'protondrive --backend proton configure' first")
 	}
 
-	obscuredPlaceholder, err := runRcloneCapture("obscure", "proton-cli-session-placeholder")
+	obscuredPlaceholder, err := obscureRcloneSecret("proton-cli-session-placeholder")
 	if err != nil {
 		return fmt.Errorf("failed to prepare rclone placeholder password: %w", err)
 	}
@@ -2855,11 +2883,11 @@ func configureProtonCLISessionFromRcloneRemote(remote string, verify bool) error
 	fmt.Printf("Wrote official Proton Drive CLI session to %s.\n", target)
 	if verify {
 		if err := ensureProtonDrive(); err != nil {
-			return fmt.Errorf("Proton CLI session was written but could not be verified: %w", err)
+			return fmt.Errorf("proton CLI session was written but could not be verified: %w", err)
 		}
 		fmt.Println("Verifying Proton CLI session...")
 		if _, err := runProtonDriveCapture("filesystem", "list", "/"); err != nil {
-			return fmt.Errorf("Proton CLI session was written but verification failed: %w", err)
+			return fmt.Errorf("proton CLI session was written but verification failed: %w", err)
 		}
 		fmt.Println("Browserless Proton CLI session verified.")
 	}
@@ -2965,7 +2993,7 @@ func loadProtonCLISessionFromSecretTool() ([]byte, error) {
 	}
 	var lastErr error
 	for _, args := range candidates {
-		out, err := exec.Command("secret-tool", args...).Output()
+		out, err := exec.Command("secret-tool", args...).Output() // #nosec G204 -- fixed secret-tool command with fixed attribute candidates
 		if err == nil && len(bytes.TrimSpace(out)) > 0 {
 			return out, nil
 		}
@@ -3048,7 +3076,7 @@ await Bun.secrets.set({ service: %q, name: %q, value });
 	if err := os.WriteFile(scriptPath, []byte(script), 0o600); err != nil {
 		return err
 	}
-	cmd := exec.Command(bunPath, scriptPath, payloadPath)
+	cmd := exec.Command(bunPath, scriptPath, payloadPath) // #nosec G204 -- bun path is resolved via exec.LookPath and arguments are temp files
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("bun secrets writer failed: %s", strings.TrimSpace(string(output)))
 	}
@@ -3137,8 +3165,18 @@ func rcloneConfigFilePath() (string, error) {
 	return expandPath(candidate), nil
 }
 
+func obscureRcloneSecret(secret string) (string, error) {
+	cmd := externalCommand(currentOptions.RcloneBin, "obscure", "-")
+	cmd.Stdin = strings.NewReader(secret + "\n")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("%s obscure failed: %s", currentOptions.RcloneBin, strings.TrimSpace(string(output)))
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
 func readRcloneConfigSection(configPath, section string) (map[string]string, error) {
-	data, err := os.ReadFile(configPath)
+	data, err := os.ReadFile(configPath) // #nosec G304 -- rclone config path is resolved from RCLONE_CONFIG or rclone itself
 	if err != nil {
 		return nil, err
 	}
@@ -3174,7 +3212,7 @@ func writeRcloneConfigSection(configPath, section string, values map[string]stri
 		return errors.New("rclone config section cannot be empty")
 	}
 	var lines []string
-	if data, err := os.ReadFile(configPath); err == nil {
+	if data, err := os.ReadFile(configPath); err == nil { // #nosec G304 -- rclone config path is resolved from RCLONE_CONFIG or rclone itself
 		lines = strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -3210,19 +3248,25 @@ func writeRcloneConfigSection(configPath, section string, values map[string]stri
 		"type",
 		"username",
 		"password",
+		"mailbox_password",
+		"2fa",
 		"client_uid",
 		"client_access_token",
 		"client_refresh_token",
 		"client_salted_key_pass",
 		"enable_caching",
 	} {
-		out = append(out, fmt.Sprintf("%s = %s", key, sanitizeConfigValue(values[key])))
+		value, ok := values[key]
+		if !ok {
+			continue
+		}
+		out = append(out, fmt.Sprintf("%s = %s", key, sanitizeConfigValue(value)))
 	}
 	payload := strings.Join(out, "\n") + "\n"
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		return err
 	}
-	if err := os.WriteFile(configPath, []byte(payload), 0o600); err != nil {
+	if err := os.WriteFile(configPath, []byte(payload), 0o600); err != nil { // #nosec G703 -- rclone config path is explicit user/rclone configuration
 		return err
 	}
 	return os.Chmod(configPath, 0o600)
@@ -3411,7 +3455,7 @@ func loadEncryptedCredentials(remote, passphrase string) (storedCredentials, err
 	if err != nil {
 		return storedCredentials{}, err
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- credential path is generated under the app config directory
 	if err != nil {
 		return storedCredentials{}, err
 	}
@@ -3486,7 +3530,7 @@ func ensureSyncConfigDir() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil { // #nosec G301 -- sync config directory is user-editable application config
 		return "", err
 	}
 	return dir, nil
@@ -3549,7 +3593,7 @@ func loadSyncConfig(identifier string) (loadedSyncConfig, error) {
 }
 
 func readSyncConfigFile(path string) (syncConfig, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- sync config path may be explicitly provided by the user
 	if err != nil {
 		return syncConfig{}, err
 	}
@@ -3690,7 +3734,7 @@ func listCustomSyncConfigs() ([]syncConfigSummary, string, error) {
 }
 
 func readSyncConfigSummary(path string) (syncConfigSummary, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- summary reads JSON files discovered inside the sync config directory
 	if err != nil {
 		return syncConfigSummary{}, err
 	}
@@ -3746,7 +3790,7 @@ func loadRemoteState(remote string) (remoteState, error) {
 	if err != nil {
 		return remoteState{}, err
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- state path is generated under the app config directory
 	if errors.Is(err, os.ErrNotExist) {
 		return remoteState{Remote: normalizedRemoteName(remote)}, nil
 	}
@@ -3971,7 +4015,7 @@ func encryptCredentials(passphrase string, creds storedCredentials) ([]byte, err
 		return nil, err
 	}
 
-	raw, err := json.Marshal(creds)
+	raw, err := json.Marshal(creds) // #nosec G117 -- plaintext is marshaled only to be immediately encrypted with AES-GCM
 	if err != nil {
 		return nil, err
 	}
@@ -4056,17 +4100,35 @@ func externalCommandAvailable(bin string) bool {
 
 func externalCommand(bin string, args ...string) *exec.Cmd {
 	if insideFlatpak() && filepath.IsAbs(bin) && hostCommandAvailable(bin) {
-		spawnArgs := append([]string{"--host", bin}, args...)
-		return exec.Command("flatpak-spawn", spawnArgs...)
+		spawnArgs := flatpakHostSpawnArgs(bin, args...)
+		return exec.Command("flatpak-spawn", spawnArgs...) // #nosec G204 -- explicit binary path is forwarded as argv, not shell-expanded
 	}
 	if _, err := exec.LookPath(bin); err == nil {
-		return exec.Command(bin, args...)
+		return exec.Command(bin, args...) // #nosec G204 -- external helper binary is user-selected wrapper configuration
 	}
 	if hostCommandAvailable(bin) {
-		spawnArgs := append([]string{"--host", bin}, args...)
-		return exec.Command("flatpak-spawn", spawnArgs...)
+		spawnArgs := flatpakHostSpawnArgs(bin, args...)
+		return exec.Command("flatpak-spawn", spawnArgs...) // #nosec G204 -- host helper binary is forwarded as argv, not shell-expanded
 	}
-	return exec.Command(bin, args...)
+	return exec.Command(bin, args...) // #nosec G204 -- fallback returns the intended helper command so callers get the OS error
+}
+
+func flatpakHostSpawnArgs(bin string, args ...string) []string {
+	spawnArgs := []string{"--host"}
+	for _, name := range []string{
+		"RCLONE_CONFIG",
+		"PROTON_DRIVE_UNSAFE_SECRETS",
+		"PROTON_DRIVE_CACHE_DIR",
+		"XDG_CONFIG_HOME",
+		"XDG_CACHE_HOME",
+		"XDG_DATA_HOME",
+	} {
+		if value, ok := os.LookupEnv(name); ok {
+			spawnArgs = append(spawnArgs, "--env="+name+"="+value)
+		}
+	}
+	spawnArgs = append(spawnArgs, bin)
+	return append(spawnArgs, args...)
 }
 
 func hostCommandAvailable(bin string) bool {
@@ -4076,7 +4138,7 @@ func hostCommandAvailable(bin string) bool {
 	if _, err := exec.LookPath("flatpak-spawn"); err != nil {
 		return false
 	}
-	cmd := exec.Command(
+	cmd := exec.Command( // #nosec G204 -- flatpak-spawn command checks host command availability with bin passed as positional parameter
 		"flatpak-spawn",
 		"--host",
 		"sh",
@@ -4163,7 +4225,9 @@ func watchAndSync(localPath string, debounce time.Duration, run func() error) er
 				}
 				if event.Op&fsnotify.Create != 0 {
 					if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
-						addRecursiveWatch(watcher, event.Name)
+						if err := addRecursiveWatch(watcher, event.Name); err != nil {
+							fmt.Fprintf(os.Stderr, "Watcher error: unable to watch %s: %v\n", event.Name, err)
+						}
 					}
 				}
 				if event.Op&fsnotify.Chmod != 0 {

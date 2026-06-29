@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="console-application">
-  <id>io.github.ColinMario.ProtondriveForLinux</id>
+  <id>io.github.colinmario.protondriveforlinux</id>
   <name>Protondrive-for-Linux</name>
   <summary>Command-line helper for Proton Drive workflows on Linux</summary>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-only</project_license>
-  <developer id="io.github.ColinMario">
+  <developer id="io.github.colinmario">
     <name>ColinMario</name>
   </developer>
   <description>
@@ -21,7 +21,7 @@
       by this package.
     </p>
   </description>
-  <launchable type="desktop-id">io.github.ColinMario.ProtondriveForLinux.desktop</launchable>
+  <launchable type="desktop-id">io.github.colinmario.protondriveforlinux.desktop</launchable>
   <provides>
     <binary>protondrive</binary>
   </provides>
@@ -29,6 +29,15 @@
   <url type="bugtracker">https://github.com/ColinMario/Protondrive-for-Linux/issues</url>
   <url type="vcs-browser">https://github.com/ColinMario/Protondrive-for-Linux</url>
   <releases>
+    <release version="0.2.5" date="2026-06-29">
+      <description>
+        <p>
+          Hardened sync backend selection, rclone credential handling, Flatpak
+          host-tool forwarding, persistent mount cleanup, and bootstrap
+          downloads after a full Linux and Flatpak validation pass.
+        </p>
+      </description>
+    </release>
     <release version="0.2.4" date="2026-06-29">
       <description>
         <p>
