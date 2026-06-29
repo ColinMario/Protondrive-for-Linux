@@ -456,6 +456,36 @@ func TestPersistentMountServiceName(t *testing.T) {
 	if got != want {
 		t.Fatalf("persistentMountServiceName with override = %q, want %q", got, want)
 	}
+
+	got = persistentMountOpenRCServiceName("protondrive", "/home/alice/Proton Drive", "")
+	want = "protondrive-mount-protondrive-proton-drive"
+	if got != want {
+		t.Fatalf("persistentMountOpenRCServiceName = %q, want %q", got, want)
+	}
+}
+
+func TestNormalizePersistentMountManager(t *testing.T) {
+	for _, tc := range []struct {
+		input string
+		want  string
+	}{
+		{"", persistentMountManagerAuto},
+		{"AUTO", persistentMountManagerAuto},
+		{" systemd ", persistentMountManagerSystemd},
+		{"openrc", persistentMountManagerOpenRC},
+	} {
+		got, err := normalizePersistentMountManager(tc.input)
+		if err != nil {
+			t.Fatalf("normalizePersistentMountManager(%q) returned error: %v", tc.input, err)
+		}
+		if got != tc.want {
+			t.Fatalf("normalizePersistentMountManager(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+
+	if _, err := normalizePersistentMountManager("launchd"); err == nil {
+		t.Fatal("normalizePersistentMountManager accepted unsupported manager")
+	}
 }
 
 func TestPersistentMountStartArgs(t *testing.T) {
@@ -496,6 +526,24 @@ func TestPersistentMountStartArgs(t *testing.T) {
 		}
 		if !found {
 			t.Fatalf("persistent args missing %q: %#v", want, args)
+		}
+	}
+}
+
+func TestOpenRCMountService(t *testing.T) {
+	service := openRCMountService("/sbin/openrc-run", "protondrive-mount-main-drive", "/home/alice/.local/share/protondrive/openrc/start.sh", "/home/alice/.local/share/protondrive/openrc/stop.sh")
+	for _, want := range []string{
+		"#!/sbin/openrc-run",
+		"supervisor=supervise-daemon",
+		"respawn_delay=10",
+		"respawn_max=3",
+		"respawn_period=30",
+		"command='/home/alice/.local/share/protondrive/openrc/start.sh'",
+		"'/home/alice/.local/share/protondrive/openrc/stop.sh' || true",
+		"XDG_RUNTIME_DIR is required for OpenRC user services",
+	} {
+		if !strings.Contains(service, want) {
+			t.Fatalf("OpenRC service missing %q:\n%s", want, service)
 		}
 	}
 }

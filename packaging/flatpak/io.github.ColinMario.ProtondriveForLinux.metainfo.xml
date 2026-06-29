@@ -29,6 +29,13 @@
   <url type="bugtracker">https://github.com/ColinMario/Protondrive-for-Linux/issues</url>
   <url type="vcs-browser">https://github.com/ColinMario/Protondrive-for-Linux</url>
   <releases>
+    <release version="0.2.4" date="2026-06-29">
+      <description>
+        <p>
+          Added OpenRC user-service support for persistent Linux mounts.
+        </p>
+      </description>
+    </release>
     <release version="0.2.3" date="2026-06-29">
       <description>
         <p>
@@ -60,7 +67,7 @@
         <p>
           Modernized the wrapper around Proton's official Drive CLI, added
           browserless session bridging, macOS WebDAV mounts, and persistent
-          Linux systemd user mounts.
+          Linux user mounts.
         </p>
       </description>
     </release>

@@ -53,6 +53,10 @@ const (
 	mountMethodFuse   = "fuse"
 	mountMethodWebDAV = "webdav"
 
+	persistentMountManagerAuto    = "auto"
+	persistentMountManagerSystemd = "systemd"
+	persistentMountManagerOpenRC  = "openrc"
+
 	protonDriveDefaultBin = "proton-drive"
 	rcloneDefaultBin      = "rclone"
 
@@ -1736,8 +1740,9 @@ func runMount(remote string, args []string) error {
 	allowRoot := fs.Bool("allow-root", false, "Add --allow-root")
 	foreground := fs.Bool("foreground", false, "Run rclone mount in the foreground (Ctrl+C to stop)")
 	mountMethodFlag := fs.String("mount-method", mountMethodAuto, "Mount method: auto, fuse, or webdav (macOS auto uses webdav to avoid macFUSE)")
-	persist := fs.Bool("persist", false, "Install and start a persistent Linux systemd user mount service")
-	persistName := fs.String("persist-name", "", "Name suffix for the persistent systemd user mount service")
+	persist := fs.Bool("persist", false, "Install and start a persistent Linux user mount service")
+	persistName := fs.String("persist-name", "", "Name suffix for the persistent user mount service")
+	persistManager := fs.String("persist-manager", persistentMountManagerAuto, "Persistent service manager: auto, systemd, or openrc")
 	enableLinger := fs.Bool("enable-linger", false, "With --persist, attempt to enable systemd user lingering for boot-time mounts")
 	readyTimeout := fs.Duration("ready-timeout", 30*time.Second, "Max wait for mounts to become ready when backgrounding")
 	var customFlags repeatableFlag
@@ -1749,6 +1754,7 @@ func runMount(remote string, args []string) error {
 		"buffer-size":       true,
 		"mount-method":      true,
 		"persist-name":      true,
+		"persist-manager":   true,
 		"ready-timeout":     true,
 		"rclone-flag":       true,
 		"persist":           false,
@@ -1790,7 +1796,7 @@ func runMount(remote string, args []string) error {
 	mountMethod = chooseMountMethod(mountMethod, *foreground)
 	if *persist {
 		if *foreground {
-			return errors.New("--persist manages the mount as a foreground systemd service; do not combine it with --foreground")
+			return errors.New("--persist manages the mount as a foreground service; do not combine it with --foreground")
 		}
 		if mountMethod != mountMethodFuse {
 			return fmt.Errorf("--persist currently supports Linux FUSE mounts only; got mount method %s", mountMethod)
@@ -1811,6 +1817,7 @@ func runMount(remote string, args []string) error {
 			ReadyTimeout: *readyTimeout,
 			RcloneFlags:  append([]string(nil), customFlags...),
 			PersistName:  *persistName,
+			Manager:      *persistManager,
 			EnableLinger: *enableLinger,
 			RcloneBin:    currentOptions.RcloneBin,
 		}
@@ -2011,20 +2018,36 @@ type persistentMountOptions struct {
 	ReadyTimeout time.Duration
 	RcloneFlags  []string
 	PersistName  string
+	Manager      string
 	EnableLinger bool
 	RcloneBin    string
 }
 
 func installPersistentMount(options persistentMountOptions) error {
 	if runtime.GOOS != "linux" {
-		return fmt.Errorf("--persist currently installs systemd user units on Linux only (current OS: %s)", runtime.GOOS)
+		return fmt.Errorf("--persist currently installs Linux user services only (current OS: %s)", runtime.GOOS)
 	}
+	manager, err := resolvePersistentMountManager(options.Manager)
+	if err != nil {
+		return err
+	}
+	switch manager {
+	case persistentMountManagerSystemd:
+		return installSystemdPersistentMount(options)
+	case persistentMountManagerOpenRC:
+		return installOpenRCPersistentMount(options)
+	default:
+		return fmt.Errorf("unsupported persistent service manager %q", manager)
+	}
+}
+
+func installSystemdPersistentMount(options persistentMountOptions) error {
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		return errors.New("systemctl not found; persistent mounts require systemd --user")
 	}
 
 	serviceName := persistentMountServiceName(options.Remote, options.MountPoint, options.PersistName)
-	unitDir, scriptDir, err := persistentMountDirs()
+	unitDir, scriptDir, err := systemdPersistentMountDirs()
 	if err != nil {
 		return err
 	}
@@ -2083,14 +2106,114 @@ func installPersistentMount(options persistentMountOptions) error {
 	return nil
 }
 
-func removePersistentMount(remote, mountPoint, persistName string) error {
-	if runtime.GOOS != "linux" {
-		return fmt.Errorf("--remove-persist currently manages Linux systemd user units only (current OS: %s)", runtime.GOOS)
+func installOpenRCPersistentMount(options persistentMountOptions) error {
+	if options.EnableLinger {
+		return errors.New("--enable-linger is only supported with systemd user services; OpenRC user services depend on the user's OpenRC session setup")
 	}
-	serviceName := persistentMountServiceName(remote, mountPoint, persistName)
-	unitDir, scriptDir, err := persistentMountDirs()
+	rcService, err := findOpenRCBinary("rc-service")
 	if err != nil {
 		return err
+	}
+	rcUpdate, err := findOpenRCBinary("rc-update")
+	if err != nil {
+		return err
+	}
+	openRCRun, err := findOpenRCBinary("openrc-run")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(os.Getenv("XDG_RUNTIME_DIR")) == "" {
+		return errors.New("OpenRC user services require XDG_RUNTIME_DIR; run from an OpenRC user session before using --persist-manager openrc")
+	}
+
+	serviceName := persistentMountOpenRCServiceName(options.Remote, options.MountPoint, options.PersistName)
+	initDir, runlevelDir, scriptDir, err := openRCPersistentMountDirs()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(initDir, 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(runlevelDir, 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(scriptDir, 0o700); err != nil {
+		return err
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	exe, err = filepath.Abs(exe)
+	if err != nil {
+		return err
+	}
+	rcloneBin := options.RcloneBin
+	if found, err := exec.LookPath(rcloneBin); err == nil {
+		rcloneBin = found
+	}
+
+	startScript := filepath.Join(scriptDir, serviceName+".sh")
+	stopScript := filepath.Join(scriptDir, serviceName+"-stop.sh")
+	servicePath := filepath.Join(initDir, serviceName)
+
+	startArgs := persistentMountStartArgs(exe, rcloneBin, options)
+	if err := os.WriteFile(startScript, []byte(shellScript(startArgs)), 0o700); err != nil {
+		return err
+	}
+	if err := os.WriteFile(stopScript, []byte(unmountShellScript(options.MountPoint)), 0o700); err != nil {
+		return err
+	}
+	if err := os.WriteFile(servicePath, []byte(openRCMountService(openRCRun, serviceName, startScript, stopScript)), 0o755); err != nil {
+		return err
+	}
+
+	if err := runCommand(rcUpdate, "--user", "add", serviceName, "default"); err != nil {
+		return err
+	}
+	if err := runCommand(rcService, "--user", serviceName, "start"); err != nil {
+		return err
+	}
+
+	fmt.Printf("Persistent OpenRC user service installed and started: %s\n", serviceName)
+	fmt.Printf("Service: %s\n", servicePath)
+	fmt.Printf("Mount point: %s\n", options.MountPoint)
+	fmt.Println("OpenRC user services start with the user's OpenRC session; configure your distribution's OpenRC user-session support for boot-time startup.")
+	return nil
+}
+
+func removePersistentMount(remote, mountPoint, persistName, managerName string) error {
+	if runtime.GOOS != "linux" {
+		return fmt.Errorf("--remove-persist currently manages Linux user services only (current OS: %s)", runtime.GOOS)
+	}
+	manager, err := normalizePersistentMountManager(managerName)
+	if err != nil {
+		return err
+	}
+	if manager == persistentMountManagerAuto {
+		removeSystemdPersistentMount(remote, mountPoint, persistName)
+		removeOpenRCPersistentMount(remote, mountPoint, persistName)
+		fmt.Printf("Persistent mount service removed: %s\n", persistentMountBaseName(remote, mountPoint, persistName))
+		return nil
+	}
+	switch manager {
+	case persistentMountManagerSystemd:
+		removeSystemdPersistentMount(remote, mountPoint, persistName)
+	case persistentMountManagerOpenRC:
+		removeOpenRCPersistentMount(remote, mountPoint, persistName)
+	default:
+		return fmt.Errorf("unsupported persistent service manager %q", manager)
+	}
+	fmt.Printf("Persistent mount service removed: %s\n", persistentMountBaseName(remote, mountPoint, persistName))
+	return nil
+}
+
+func removeSystemdPersistentMount(remote, mountPoint, persistName string) {
+	serviceName := persistentMountServiceName(remote, mountPoint, persistName)
+	unitDir, scriptDir, err := systemdPersistentMountDirs()
+	if err != nil {
+		return
 	}
 	_ = exec.Command("systemctl", "--user", "disable", "--now", serviceName).Run()
 	_ = os.Remove(filepath.Join(unitDir, serviceName))
@@ -2098,8 +2221,23 @@ func removePersistentMount(remote, mountPoint, persistName string) error {
 	_ = os.Remove(filepath.Join(scriptDir, baseName+".sh"))
 	_ = os.Remove(filepath.Join(scriptDir, baseName+"-stop.sh"))
 	_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
-	fmt.Printf("Persistent mount service removed: %s\n", serviceName)
-	return nil
+}
+
+func removeOpenRCPersistentMount(remote, mountPoint, persistName string) {
+	serviceName := persistentMountOpenRCServiceName(remote, mountPoint, persistName)
+	initDir, _, scriptDir, err := openRCPersistentMountDirs()
+	if err != nil {
+		return
+	}
+	if rcService, err := findOpenRCBinary("rc-service"); err == nil {
+		_ = exec.Command(rcService, "--user", serviceName, "stop").Run()
+	}
+	if rcUpdate, err := findOpenRCBinary("rc-update"); err == nil {
+		_ = exec.Command(rcUpdate, "--user", "del", serviceName, "default").Run()
+	}
+	_ = os.Remove(filepath.Join(initDir, serviceName))
+	_ = os.Remove(filepath.Join(scriptDir, serviceName+".sh"))
+	_ = os.Remove(filepath.Join(scriptDir, serviceName+"-stop.sh"))
 }
 
 func persistentMountStartArgs(exe, rcloneBin string, options persistentMountOptions) []string {
@@ -2139,14 +2277,22 @@ func persistentMountStartArgs(exe, rcloneBin string, options persistentMountOpti
 }
 
 func persistentMountServiceName(remote, mountPoint, persistName string) string {
+	return persistentMountBaseName(remote, mountPoint, persistName) + ".service"
+}
+
+func persistentMountOpenRCServiceName(remote, mountPoint, persistName string) string {
+	return persistentMountBaseName(remote, mountPoint, persistName)
+}
+
+func persistentMountBaseName(remote, mountPoint, persistName string) string {
 	name := strings.TrimSpace(persistName)
 	if name == "" {
 		name = normalizedRemoteName(remote) + "-" + filepath.Base(filepath.Clean(mountPoint))
 	}
-	return "protondrive-mount-" + slugifyConfigName(name) + ".service"
+	return "protondrive-mount-" + slugifyConfigName(name)
 }
 
-func persistentMountDirs() (unitDir string, scriptDir string, err error) {
+func systemdPersistentMountDirs() (unitDir string, scriptDir string, err error) {
 	configDir, err := os.UserConfigDir()
 	if err != nil {
 		return "", "", err
@@ -2156,6 +2302,84 @@ func persistentMountDirs() (unitDir string, scriptDir string, err error) {
 		return "", "", err
 	}
 	return filepath.Join(configDir, "systemd", "user"), filepath.Join(appDir, "systemd"), nil
+}
+
+func openRCPersistentMountDirs() (initDir string, runlevelDir string, scriptDir string, err error) {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", "", "", err
+	}
+	appDir, err := credentialDirPath()
+	if err != nil {
+		return "", "", "", err
+	}
+	return filepath.Join(configDir, "rc", "init.d"),
+		filepath.Join(configDir, "rc", "runlevels", "default"),
+		filepath.Join(appDir, "openrc"),
+		nil
+}
+
+func normalizePersistentMountManager(value string) (string, error) {
+	manager := strings.ToLower(strings.TrimSpace(value))
+	if manager == "" {
+		manager = persistentMountManagerAuto
+	}
+	switch manager {
+	case persistentMountManagerAuto, persistentMountManagerSystemd, persistentMountManagerOpenRC:
+		return manager, nil
+	default:
+		return "", errors.New("--persist-manager must be one of auto, systemd, or openrc")
+	}
+}
+
+func resolvePersistentMountManager(value string) (string, error) {
+	manager, err := normalizePersistentMountManager(value)
+	if err != nil {
+		return "", err
+	}
+	if manager != persistentMountManagerAuto {
+		return manager, nil
+	}
+	if isOpenRCRuntime() && openRCServiceManagerAvailable() {
+		return persistentMountManagerOpenRC, nil
+	}
+	if _, err := exec.LookPath("systemctl"); err == nil {
+		return persistentMountManagerSystemd, nil
+	}
+	if openRCServiceManagerAvailable() {
+		return persistentMountManagerOpenRC, nil
+	}
+	return "", errors.New("no supported persistent service manager found; install systemd user services or OpenRC user services, or pass --persist-manager systemd/openrc")
+}
+
+func isOpenRCRuntime() bool {
+	if _, err := os.Stat("/run/openrc"); err == nil {
+		return true
+	}
+	return false
+}
+
+func openRCServiceManagerAvailable() bool {
+	for _, name := range []string{"rc-service", "rc-update", "openrc-run"} {
+		if _, err := findOpenRCBinary(name); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+func findOpenRCBinary(name string) (string, error) {
+	if found, err := exec.LookPath(name); err == nil {
+		return found, nil
+	}
+	for _, dir := range []string{"/sbin", "/usr/sbin", "/bin", "/usr/bin"} {
+		candidate := filepath.Join(dir, name)
+		info, err := os.Stat(candidate)
+		if err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("%s not found; persistent OpenRC mounts require OpenRC user service tools", name)
 }
 
 func shellScript(args []string) string {
@@ -2200,6 +2424,36 @@ TimeoutStopSec=20
 [Install]
 WantedBy=default.target
 `, serviceName, systemdQuote(startScript), systemdQuote(stopScript))
+}
+
+func openRCMountService(openRCRun, serviceName, startScript, stopScript string) string {
+	return fmt.Sprintf(`#!%s
+description=%s
+supervisor=supervise-daemon
+command=%s
+respawn_delay=10
+respawn_max=3
+respawn_period=30
+retry="TERM/20/KILL/5"
+output_log="${XDG_RUNTIME_DIR}/${RC_SVCNAME}.log"
+error_log="${XDG_RUNTIME_DIR}/${RC_SVCNAME}.log"
+
+depend() {
+	use net dns
+	after net
+}
+
+start_pre() {
+	if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
+		eerror "XDG_RUNTIME_DIR is required for OpenRC user services"
+		return 1
+	fi
+}
+
+stop_post() {
+	%s || true
+}
+`, openRCRun, shellQuote("Persistent Proton Drive mount "+serviceName), shellQuote(startScript), shellQuote(stopScript))
 }
 
 func shellQuote(value string) string {
@@ -2274,12 +2528,14 @@ func mountErrorWithHints(target, mountPoint string, timeout time.Duration, mount
 func runUnmount(remote string, args []string) error {
 	fs := flag.NewFlagSet("unmount", flag.ContinueOnError)
 	force := fs.Bool("force", false, "Force unmount (try to detach a stuck mount)")
-	removePersist := fs.Bool("remove-persist", false, "Disable and remove the persistent Linux systemd user mount service")
-	persistName := fs.String("persist-name", "", "Name suffix for the persistent systemd user mount service")
+	removePersist := fs.Bool("remove-persist", false, "Disable and remove the persistent Linux user mount service")
+	persistName := fs.String("persist-name", "", "Name suffix for the persistent user mount service")
+	persistManager := fs.String("persist-manager", persistentMountManagerAuto, "Persistent service manager: auto, systemd, or openrc")
 	parseArgs := normalizeInterspersedFlags(args, map[string]bool{
-		"force":          false,
-		"remove-persist": false,
-		"persist-name":   true,
+		"force":           false,
+		"remove-persist":  false,
+		"persist-name":    true,
+		"persist-manager": true,
 	})
 	if err := parseCommandFlags(fs, parseArgs); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -2295,7 +2551,7 @@ func runUnmount(remote string, args []string) error {
 	mountPoint := expandPath(remaining[0])
 
 	if *removePersist {
-		if err := removePersistentMount(remote, mountPoint, *persistName); err != nil {
+		if err := removePersistentMount(remote, mountPoint, *persistName, *persistManager); err != nil {
 			return err
 		}
 	}
