@@ -421,8 +421,7 @@ func isBackendAvailable(name string) bool {
 	if strings.TrimSpace(bin) == "" {
 		return false
 	}
-	_, err := exec.LookPath(bin)
-	return err == nil
+	return externalCommandAvailable(bin)
 }
 
 func requireBackend(name string) (string, error) {
@@ -1422,7 +1421,7 @@ func runWebDAVMount(remote, mountPoint, remotePathFlag, cacheMode, cacheMaxAge, 
 	cmdArgs = append(cmdArgs, extra...)
 
 	fmt.Printf("Serving %s over local WebDAV at %s for macOS mount.\n", target, url)
-	cmd := exec.Command(currentOptions.RcloneBin, cmdArgs...)
+	cmd := externalCommand(currentOptions.RcloneBin, cmdArgs...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
@@ -3292,22 +3291,68 @@ func printCommandUsage(fs *flag.FlagSet) {
 	fmt.Println()
 }
 
+func externalCommandAvailable(bin string) bool {
+	bin = strings.TrimSpace(bin)
+	if bin == "" {
+		return false
+	}
+	if _, err := exec.LookPath(bin); err == nil {
+		return true
+	}
+	return hostCommandAvailable(bin)
+}
+
+func externalCommand(bin string, args ...string) *exec.Cmd {
+	if _, err := exec.LookPath(bin); err == nil {
+		return exec.Command(bin, args...)
+	}
+	if hostCommandAvailable(bin) {
+		spawnArgs := append([]string{"--host", bin}, args...)
+		return exec.Command("flatpak-spawn", spawnArgs...)
+	}
+	return exec.Command(bin, args...)
+}
+
+func hostCommandAvailable(bin string) bool {
+	if !insideFlatpak() {
+		return false
+	}
+	if _, err := exec.LookPath("flatpak-spawn"); err != nil {
+		return false
+	}
+	cmd := exec.Command(
+		"flatpak-spawn",
+		"--host",
+		"sh",
+		"-lc",
+		`if [ -n "$1" ] && [ -x "$1" ]; then exit 0; fi; command -v -- "$1" >/dev/null 2>&1`,
+		"sh",
+		bin,
+	)
+	return cmd.Run() == nil
+}
+
+func insideFlatpak() bool {
+	_, err := os.Stat("/.flatpak-info")
+	return err == nil
+}
+
 func ensureRclone() error {
-	if _, err := exec.LookPath(currentOptions.RcloneBin); err != nil {
+	if !externalCommandAvailable(currentOptions.RcloneBin) {
 		return fmt.Errorf("%s not found in PATH. Install rclone from https://rclone.org/install/ or set --rclone-bin", currentOptions.RcloneBin)
 	}
 	return nil
 }
 
 func ensureProtonDrive() error {
-	if _, err := exec.LookPath(currentOptions.ProtonDriveBin); err != nil {
+	if !externalCommandAvailable(currentOptions.ProtonDriveBin) {
 		return fmt.Errorf("%s not found in PATH. Install the official Proton Drive CLI from https://proton.me/download/drive/cli/index.html or set --proton-drive-bin", currentOptions.ProtonDriveBin)
 	}
 	return nil
 }
 
 func runRcloneCapture(args ...string) (string, error) {
-	cmd := exec.Command(currentOptions.RcloneBin, args...)
+	cmd := externalCommand(currentOptions.RcloneBin, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("%s %s failed: %s", currentOptions.RcloneBin, strings.Join(args, " "), strings.TrimSpace(string(output)))
@@ -3316,14 +3361,14 @@ func runRcloneCapture(args ...string) (string, error) {
 }
 
 func streamRclone(args ...string) error {
-	cmd := exec.Command(currentOptions.RcloneBin, args...)
+	cmd := externalCommand(currentOptions.RcloneBin, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
 
 func runProtonDriveCapture(args ...string) (string, error) {
-	cmd := exec.Command(currentOptions.ProtonDriveBin, args...)
+	cmd := externalCommand(currentOptions.ProtonDriveBin, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("%s %s failed: %s", currentOptions.ProtonDriveBin, strings.Join(args, " "), strings.TrimSpace(string(output)))
@@ -3332,7 +3377,7 @@ func runProtonDriveCapture(args ...string) (string, error) {
 }
 
 func streamProtonDrive(args ...string) error {
-	cmd := exec.Command(currentOptions.ProtonDriveBin, args...)
+	cmd := externalCommand(currentOptions.ProtonDriveBin, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()

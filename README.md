@@ -49,6 +49,35 @@ chmod +x proton-drive
 sudo install -m 0755 proton-drive /usr/local/bin/proton-drive
 ```
 
+## Flatpak
+
+Flatpak packaging metadata is available under `packaging/flatpak`.
+
+The Flatpak packages only this GPLv3 wrapper. It does not redistribute Proton's official `proton-drive` binary or rclone. Inside the sandbox, the wrapper can call host-installed `proton-drive` and `rclone` through `flatpak-spawn --host`.
+
+Build locally:
+
+```bash
+flatpak install flathub org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08 org.freedesktop.Sdk.Extension.golang//24.08
+flatpak-builder --force-clean --user --install-deps-from=flathub \
+  build-dir packaging/flatpak/io.github.ColinMario.ProtondriveForLinux.yml
+```
+
+Install locally:
+
+```bash
+flatpak-builder --user --install --force-clean --install-deps-from=flathub \
+  build-dir packaging/flatpak/io.github.ColinMario.ProtondriveForLinux.yml
+```
+
+Run:
+
+```bash
+flatpak run io.github.ColinMario.ProtondriveForLinux --help
+```
+
+See [packaging/flatpak/README.md](packaging/flatpak/README.md) for packaging notes and Flathub submission details.
+
 ## Quick start
 
 ```bash

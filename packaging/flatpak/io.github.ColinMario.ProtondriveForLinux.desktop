@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Protondrive CLI
+Comment=Command-line helper for Proton Drive workflows
+Exec=protondrive --help
+Icon=io.github.ColinMario.ProtondriveForLinux
+Terminal=true
+NoDisplay=true
+Categories=Network;FileTransfer;Utility;
+Keywords=Proton;Drive;rclone;sync;mount;

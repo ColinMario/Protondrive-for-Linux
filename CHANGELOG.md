@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Added
+- Added Flatpak packaging metadata for `io.github.ColinMario.ProtondriveForLinux`, including AppStream metadata, a desktop entry, and a neutral project icon.
+- Added vendored Go dependencies so Flatpak builds can run with `-mod=vendor` and without fetching Go modules during the build.
+
+### Changed
+- The wrapper can resolve host-installed `proton-drive` and `rclone` through `flatpak-spawn --host` when running inside a Flatpak sandbox.
 
 ## [0.2.0] - 2026-06-29
 ### Added
