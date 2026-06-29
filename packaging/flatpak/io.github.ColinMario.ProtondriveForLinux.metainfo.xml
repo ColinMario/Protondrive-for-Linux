@@ -29,6 +29,14 @@
   <url type="bugtracker">https://github.com/ColinMario/Protondrive-for-Linux/issues</url>
   <url type="vcs-browser">https://github.com/ColinMario/Protondrive-for-Linux</url>
   <releases>
+    <release version="0.2.3" date="2026-06-29">
+      <description>
+        <p>
+          Added rclone configuration support for Proton two-password accounts
+          through mailbox password flags, encrypted vault storage, and refresh.
+        </p>
+      </description>
+    </release>
     <release version="0.2.2" date="2026-06-29">
       <description>
         <p>
