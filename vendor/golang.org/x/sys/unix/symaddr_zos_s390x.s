@@ -72,3 +72,4 @@ TEXT ·get_ReadlinkatAddr(SB), NOSPLIT|NOFRAME, $0-8
 	MOVD $·Readlinkat(SB), R8
 	MOVD R8, ret+0(FP)
 	RET
+	
