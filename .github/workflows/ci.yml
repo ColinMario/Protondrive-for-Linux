@@ -23,7 +23,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        go: [1.25.x, 1.26.x]
+        go: [1.25.12, 1.26.5]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -31,13 +31,14 @@ jobs:
         with:
           go-version: ${{ matrix.go }}
           cache: true
+      - run: go version
       - run: go test -count=1 ./...
       - run: go vet ./...
       - name: Race detector
-        if: matrix.go == '1.26.x'
+        if: matrix.go == '1.26.5'
         run: go test -race -count=1 ./...
       - name: Coverage floor
-        if: matrix.os == 'ubuntu-latest' && matrix.go == '1.26.x'
+        if: matrix.os == 'ubuntu-latest' && matrix.go == '1.26.5'
         run: |
           go test -coverpkg=./... -coverprofile=coverage.out ./...
           total="$(go tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/, "", $3); print $3}')"
@@ -50,7 +51,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: 1.26.x
+          go-version: 1.26.5
           cache: true
       - run: go mod verify
       - name: Verify generated module files
@@ -70,7 +71,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: 1.26.x
+          go-version: 1.26.5
           cache: true
       - run: |
           for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 freebsd/amd64; do

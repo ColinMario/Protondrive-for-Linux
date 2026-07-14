@@ -35,7 +35,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - Rejected mirror backup directories nested inside the destination, including root-mirror recursion on the same remote.
 - Removed the local vault passphrase from every child-process environment, including Flatpak host bridges.
 - Enforced HTTPS-only dependency downloads and redirects, constrained Proton CLI assets to the official download path, and strictly validated rclone release versions.
-- Made binaries, archives, native packages, and SPDX SBOMs reproducible from commit-derived timestamps and artifact digests; builds use the current Go 1.26 patch, and tags fail unless they are SemVer, reachable from `main`, represented in the changelog, and matched by the immutable Flatpak source.
+- Made binaries, archives, native packages, and SPDX SBOMs reproducible from commit-derived timestamps and artifact digests; CI/release builds pin patched Go 1.25.12 and 1.26.5 toolchains, and tags fail unless they are SemVer, reachable from `main`, represented in the changelog, and matched by the immutable Flatpak source.
 - Rejected conflicting credential sources, session-import modes, and unexpected positional arguments instead of silently ignoring them.
 - Made empty-source checks ignore the sentinel itself, require regular-file sentinels, count actual remote files, and resolve symlink aliases before root/backup safety decisions.
 - Expanded state/vault filename hashes to 64 bits and removes legacy unhashed files after a successful migration.
