@@ -1,13 +1,15 @@
 package customconfigs
 
 import (
+	"bytes"
 	"embed"
-	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/ColinMario/Protondrive-for-Linux/internal/syncconfig"
 )
 
 // Template holds metadata and the raw JSON for a built-in sync configuration template.
@@ -30,18 +32,15 @@ var (
 	templateAlias map[string]string
 )
 
-type templateHeader struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-}
-
 // List returns all built-in templates sorted by display name.
 func List() ([]Template, error) {
 	if err := loadTemplates(); err != nil {
 		return nil, err
 	}
 	result := make([]Template, len(templateList))
-	copy(result, templateList)
+	for i := range templateList {
+		result[i] = cloneTemplate(templateList[i])
+	}
 	return result, nil
 }
 
@@ -56,9 +55,14 @@ func Lookup(name string) (Template, bool, error) {
 	}
 	if slug, ok := templateAlias[key]; ok {
 		tpl, ok := templateMap[slug]
-		return tpl, ok, nil
+		return cloneTemplate(tpl), ok, nil
 	}
 	return Template{}, false, nil
+}
+
+func cloneTemplate(template Template) Template {
+	template.Raw = bytes.Clone(template.Raw)
+	return template
 }
 
 func loadTemplates() error {
@@ -80,8 +84,8 @@ func loadTemplates() error {
 				templatesErr = fmt.Errorf("read template %s: %w", entry.Name(), err)
 				return
 			}
-			var header templateHeader
-			if err := json.Unmarshal(data, &header); err != nil {
+			header, err := syncconfig.Parse(data)
+			if err != nil {
 				templatesErr = fmt.Errorf("template %s: %w", entry.Name(), err)
 				return
 			}

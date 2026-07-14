@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOFLAGS: -mod=vendor
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }}, Go ${{ matrix.go }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        go: [1.25.x, 1.26.x]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: ${{ matrix.go }}
+          cache: true
+      - run: go test -count=1 ./...
+      - run: go vet ./...
+      - name: Race detector
+        if: matrix.go == '1.26.x'
+        run: go test -race -count=1 ./...
+      - name: Coverage floor
+        if: matrix.os == 'ubuntu-latest' && matrix.go == '1.26.x'
+        run: |
+          go test -coverpkg=./... -coverprofile=coverage.out ./...
+          total="$(go tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/, "", $3); print $3}')"
+          awk -v total="$total" 'BEGIN { if (total < 25.0) { printf "coverage %.1f%% is below 25.0%%\n", total; exit 1 } }'
+
+  quality:
+    name: Static and security checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: 1.26.x
+          cache: true
+      - run: go mod verify
+      - name: Verify generated module files
+        run: |
+          GOFLAGS=-mod=mod go mod tidy
+          GOFLAGS=-mod=mod go mod vendor
+          git diff --exit-code -- go.mod go.sum vendor
+      - run: test -z "$(gofmt -l cmd internal tools)"
+      - run: GOFLAGS=-mod=mod go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...
+      - run: GOFLAGS=-mod=mod go run github.com/securego/gosec/v2/cmd/gosec@v2.28.0 -quiet ./...
+      - run: GOFLAGS=-mod=mod go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+
+  cross-build:
+    name: Cross-build release targets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: 1.26.x
+          cache: true
+      - run: |
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 freebsd/amd64; do
+            GOOS="${target%/*}" GOARCH="${target#*/}" CGO_ENABLED=0 go build -trimpath -buildvcs=false -o /tmp/protondrive-${target//\//-} ./cmd/protondrive
+          done
+
+  packaging:
+    name: Packaging metadata
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - run: sudo apt-get update && sudo apt-get install -y appstream desktop-file-utils flatpak-builder libxml2-utils
+      - run: appstreamcli validate --no-net packaging/flatpak/io.github.colinmario.protondriveforlinux.metainfo.xml
+      - run: desktop-file-validate packaging/flatpak/io.github.colinmario.protondriveforlinux.desktop
+      - run: xmllint --noout packaging/flatpak/io.github.colinmario.protondriveforlinux.svg
+      - run: flatpak-builder --show-manifest packaging/flatpak/io.github.colinmario.protondriveforlinux.yml >/dev/null

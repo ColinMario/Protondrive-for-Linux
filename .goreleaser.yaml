@@ -1,0 +1,88 @@
+version: 2
+
+project_name: protondrive
+
+before:
+  hooks:
+    - go test ./...
+
+builds:
+  - id: protondrive
+    main: ./cmd/protondrive
+    binary: protondrive
+    env:
+      - CGO_ENABLED=0
+      - GOFLAGS=-mod=vendor
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath, -buildvcs=false]
+    mod_timestamp: '{{ .CommitTimestamp }}'
+    ldflags:
+      - >-
+        -s -w
+        -X main.version={{.Version}}
+        -X main.commit={{.FullCommit}}
+        -X main.buildDate={{.CommitDate}}
+
+archives:
+  - id: archives
+    formats: [tar.gz]
+    name_template: 'protondrive_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+    files:
+      - README.md
+      - CHANGELOG.md
+      - LICENSE
+      - NOTICE.md
+
+nfpms:
+  - id: native-packages
+    package_name: protondrive
+    ids: [protondrive]
+    vendor: ColinMario
+    homepage: https://github.com/ColinMario/Protondrive-for-Linux
+    maintainer: ColinMario
+    description: Unofficial command-line helper for safe Proton Drive transfers and mounts
+    license: GPL-3.0-only
+    formats: [deb, rpm]
+    bindir: /usr/bin
+    mtime: '{{ .CommitDate }}'
+    rpm:
+      buildhost: reproducible.invalid
+
+checksum:
+  name_template: SHA256SUMS.txt
+
+sboms:
+  - id: archive-sbom
+    artifacts: archive
+    documents:
+      - '${artifact}.spdx.json'
+    cmd: go
+    args:
+      - run
+      - ../tools/reproducible-sbom
+      - '${artifact}'
+      - '${document}'
+      - '{{ .CommitDate }}'
+
+signs:
+  - id: checksum-signature
+    cmd: cosign
+    artifacts: checksum
+    signature: '${artifact}.sigstore.json'
+    args:
+      - sign-blob
+      - --yes
+      - --bundle=${signature}
+      - ${artifact}
+
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+
+release:
+  prerelease: auto

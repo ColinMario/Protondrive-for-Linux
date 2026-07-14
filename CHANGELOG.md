@@ -4,6 +4,49 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-14
+### Added
+- Added explicit safe `copy` and destructive `mirror` transfer operations with confirmation, deletion limits, source guards, and automatic destination backup directories.
+- Added strict versioned sync-config validation, collision-resistant state filenames, JSON status output with stable exit codes, and build/version metadata.
+- Added authenticated macOS WebDAV mounts with private logs and process identity tracking.
+- Added Linux/macOS CI, security scanners, cross-builds, packaging validation, Dependabot, reproducible GoReleaser archives, SPDX SBOMs, Sigstore checksum signatures, and GitHub build attestations.
+- Added security, contribution, notice, and full GPL-3.0 documentation.
+
+### Changed
+- Updated the supported Go baseline to 1.25 and refreshed all Go dependencies and vendored sources.
+- Validated the private session bridge against Proton Drive CLI 0.5.0 while retaining 0.4.x compatibility and fail-closed handling for future format series.
+- Changed rclone transfers to non-destructive copy semantics by default; exact destination mirroring now requires `--operation mirror --confirm-mirror`.
+- Watch mode now retries failures with exponential backoff and remains available for later changes.
+- Persistent systemd/OpenRC services now use atomic files, exact artifact/state rollback, update restarts, readiness checks, verified removal, and propagated errors.
+- Flatpak release builds now use an immutable Git tag; local source builds use a separate development manifest. Flatpak host/home permissions are documented as a distribution tradeoff rather than a sandbox boundary.
+- Flatpak release builds now embed the tagged application version and deterministic release metadata instead of reporting a development build.
+
+### Fixed
+- Fixed documented rclone passthrough by consuming the wrapper's standalone `--` delimiter.
+- Fixed `status` returning success for missing remotes or failed authentication.
+- Kept machine-readable status output single-shot by suppressing duplicate top-level error rendering.
+- Prevented transient network errors from triggering destructive credential reconfiguration.
+- Prevented one-time 2FA codes from being persisted or reused by staging them in a private temporary rclone config, and migrates legacy vaults when unlocked.
+- Made rclone config, session, vault, and state writes atomic with cooperative locks, backups, and verification rollback.
+- Refused transactional edits of encrypted rclone configs instead of risking plaintext replacement or corruption.
+- Bounded ZIP extraction by bytes actually read instead of trusting archive metadata, and escaped systemd specifier and environment expansion in generated service paths.
+- Blocked passthrough/config overrides of dry-run, deletion limits, backup handling, error handling, and other wrapper-owned mirror safeguards.
+- Validated remote names before config rendering so colon ambiguity and INI section injection cannot redirect or corrupt rclone configuration.
+- Rejected mirror backup directories nested inside the destination, including root-mirror recursion on the same remote.
+- Removed the local vault passphrase from every child-process environment, including Flatpak host bridges.
+- Enforced HTTPS-only dependency downloads and redirects, constrained Proton CLI assets to the official download path, and strictly validated rclone release versions.
+- Made binaries, archives, native packages, and SPDX SBOMs reproducible from commit-derived timestamps and artifact digests; builds use the current Go 1.26 patch, and tags fail unless they are SemVer, reachable from `main`, represented in the changelog, and matched by the immutable Flatpak source.
+- Rejected conflicting credential sources, session-import modes, and unexpected positional arguments instead of silently ignoring them.
+- Made empty-source checks ignore the sentinel itself, require regular-file sentinels, count actual remote files, and resolve symlink aliases before root/backup safety decisions.
+- Expanded state/vault filename hashes to 64 bits and removes legacy unhashed files after a successful migration.
+- Resolved sync, mount, unmount, backup, and persistent-service config paths to stable absolute locations.
+- Prevented mount passthrough from overriding daemon/state, authentication, cache, read-only, config, and remote-control settings managed by the wrapper.
+- Restricted recorded mount cleanup to generated direct-child bcrypt files so corrupted metadata cannot remove unrelated files.
+- Removed the macOS Keychain fallback that exposed session JSON through process arguments.
+- Prevented stale mount PIDs from signaling unrelated processes and verifies WebDAV shutdown after unmount.
+- Removed the macOS WebDAV password from `mount_webdav` arguments by supplying it through a private pseudo-terminal conversation instead.
+- Canonicalized mount-table paths so macOS `/var`/`/private/var` and other symlinked mount points are recognized correctly.
+
 ## [0.2.5] - 2026-06-29
 ### Fixed
 - Prevented `auto` sync from silently falling back to `rclone sync` when Proton's official CLI is unavailable, avoiding unintended mirror deletion semantics.

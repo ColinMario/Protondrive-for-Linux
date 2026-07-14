@@ -13,21 +13,21 @@ through `flatpak-spawn --host`, or it can use helper binaries installed by
 Install the Flatpak builder tooling and the Go SDK extension:
 
 ```bash
-flatpak install flathub org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08 org.freedesktop.Sdk.Extension.golang//24.08
+flatpak install flathub org.freedesktop.Platform//25.08 org.freedesktop.Sdk//25.08 org.freedesktop.Sdk.Extension.golang//25.08
 ```
 
 Build from the repository root:
 
 ```bash
 flatpak-builder --force-clean --user --install-deps-from=flathub \
-  build-dir packaging/flatpak/io.github.colinmario.protondriveforlinux.yml
+  build-dir packaging/flatpak/io.github.colinmario.protondriveforlinux.devel.yml
 ```
 
 Install locally:
 
 ```bash
 flatpak-builder --user --install --force-clean --install-deps-from=flathub \
-  build-dir packaging/flatpak/io.github.colinmario.protondriveforlinux.yml
+  build-dir packaging/flatpak/io.github.colinmario.protondriveforlinux.devel.yml
 ```
 
 Run:
@@ -76,5 +76,24 @@ are not available inside the Flatpak sandbox.
 - The package does not run network downloads during Flatpak installation. The
   explicit `bootstrap` command is used for dependency downloads so the user can
   see and approve executable code being installed.
-- If a Flathub submission prefers a remote source instead of the local `dir`
-  source, replace the source with a tagged Git source that contains `vendor/`.
+- The main manifest builds the immutable `v0.3.0` Git tag. The `.devel.yml`
+  manifest is intentionally local-only and must not be submitted to Flathub.
+
+## Security boundary
+
+This command-line application needs read/write access to user-selected files.
+The default manifest therefore grants home-directory access. It also grants
+access to `org.freedesktop.Flatpak` so the wrapper can run explicitly selected
+host helpers through `flatpak-spawn --host`. Such host commands run outside the
+Flatpak sandbox. This package is a distribution format, not a security boundary.
+
+Users who only transfer a dedicated directory can reduce access after install:
+
+```bash
+flatpak override --user --nofilesystem=home \
+  --filesystem="$HOME/ProtonTransfers" \
+  io.github.colinmario.protondriveforlinux
+```
+
+FUSE mounts and persistent systemd/OpenRC services integrate more reliably when
+the native archive, Debian, or RPM package is used instead of Flatpak.

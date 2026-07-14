@@ -29,6 +29,16 @@
   <url type="bugtracker">https://github.com/ColinMario/Protondrive-for-Linux/issues</url>
   <url type="vcs-browser">https://github.com/ColinMario/Protondrive-for-Linux</url>
   <releases>
+    <release version="0.3.0" date="2026-07-14">
+      <description>
+        <p>
+          Added safe copy and explicit guarded mirror operations, hardened
+          authentication and mount lifecycle handling, strict configuration,
+          verified service management, and reproducible signed releases with
+          SBOM and provenance attestations.
+        </p>
+      </description>
+    </release>
     <release version="0.2.5" date="2026-06-29">
       <description>
         <p>

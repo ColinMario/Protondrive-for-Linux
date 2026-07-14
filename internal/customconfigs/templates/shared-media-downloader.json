@@ -1,9 +1,12 @@
 {
+	"schema_version": 1,
   "name": "Shared Media Downloader",
-  "description": "Keeps a Proton Drive share (for example Shared/Family-Photos) mirrored locally so media centers or digital frames can read the files offline.",
+  "description": "Explicitly mirrors a Proton Drive share locally so media centers or digital frames can read it offline. Local files missing remotely can be deleted; run with --dry-run, then --confirm-mirror.",
   "local_path": "~/ProtonShares/FamilyPhotos",
   "remote_path": "Shared/Family-Photos",
   "direction": "download",
+  "operation": "mirror",
+  "max_delete": 25,
   "watch": false,
   "extra_rclone_args": [
     "--copy-links"

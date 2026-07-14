@@ -1,0 +1,8 @@
+/dist/
+/build/
+/coverage.out
+/coverage.html
+/protondrive
+/.flatpak-builder/
+/packaging/flatpak/.flatpak-builder/
+/packaging/flatpak/build-dir/
