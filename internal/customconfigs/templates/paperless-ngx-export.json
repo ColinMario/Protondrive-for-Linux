@@ -1,9 +1,11 @@
 {
-  "name": "Paperless-ngx Export Mirror",
-  "description": "Uploads the Paperless-ngx export directory (./export in the upstream compose file) to Proton Drive as a redundant off-site copy. Includes thumbnails, OCR PDFs, and metadata.",
+  "schema_version": 1,
+  "name": "Paperless-ngx Export Backup",
+  "description": "Copies the Paperless-ngx export directory to Proton Drive without deleting older remote files. Includes thumbnails, OCR PDFs, and metadata.",
   "local_path": "~/paperless-ngx/export",
   "remote_path": "Backups/Paperless/export",
   "direction": "upload",
+  "operation": "copy",
   "watch": true,
   "watch_debounce": "30s",
   "extra_rclone_args": [

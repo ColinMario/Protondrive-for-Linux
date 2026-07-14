@@ -1,6 +1,6 @@
 id: io.github.colinmario.protondriveforlinux
 runtime: org.freedesktop.Platform
-runtime-version: "24.08"
+runtime-version: "25.08"
 sdk: org.freedesktop.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.golang
@@ -24,11 +24,12 @@ modules:
         CGO_ENABLED: "0"
         GOFLAGS: -mod=vendor
     build-commands:
-      - go build -trimpath -ldflags="-s -w" -o protondrive ./cmd/protondrive
+      - go build -trimpath -buildvcs=false -ldflags="-s -w -X main.version=0.3.0 -X main.commit=v0.3.0 -X main.buildDate=2026-07-14T00:00:00Z" -o protondrive ./cmd/protondrive
       - install -Dm755 protondrive /app/bin/protondrive
       - install -Dm644 packaging/flatpak/io.github.colinmario.protondriveforlinux.metainfo.xml /app/share/metainfo/io.github.colinmario.protondriveforlinux.metainfo.xml
       - install -Dm644 packaging/flatpak/io.github.colinmario.protondriveforlinux.desktop /app/share/applications/io.github.colinmario.protondriveforlinux.desktop
       - install -Dm644 packaging/flatpak/io.github.colinmario.protondriveforlinux.svg /app/share/icons/hicolor/scalable/apps/io.github.colinmario.protondriveforlinux.svg
     sources:
-      - type: dir
-        path: ../..
+      - type: git
+        url: https://github.com/ColinMario/Protondrive-for-Linux.git
+        tag: v0.3.0

@@ -1,9 +1,11 @@
 {
+	"schema_version": 1,
   "name": "Photo Drop Upload",
-  "description": "Continuously watches a staging folder for new pictures and syncs them to a Proton Drive share (ideal for dropping files from mobile devices).",
+  "description": "Continuously watches a staging folder and copies new or changed pictures to Proton Drive without deleting remote photos when the staging folder is cleaned.",
   "local_path": "~/Pictures/ToProton",
   "remote_path": "Shares/Photos",
   "direction": "upload",
+  "operation": "copy",
   "watch": true,
   "watch_debounce": "15s",
   "extra_rclone_args": [

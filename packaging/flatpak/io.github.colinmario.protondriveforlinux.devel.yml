@@ -1,0 +1,34 @@
+id: io.github.colinmario.protondriveforlinux
+runtime: org.freedesktop.Platform
+runtime-version: "25.08"
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.golang
+command: protondrive
+
+finish-args:
+  - --share=network
+  - --filesystem=home
+  - --filesystem=xdg-config/protondrive:create
+  - --filesystem=xdg-cache/proton-drive-cli:create
+  - --filesystem=xdg-data/proton-drive-cli:create
+  - --talk-name=org.freedesktop.Flatpak
+  - --talk-name=org.freedesktop.secrets
+
+modules:
+  - name: protondrive
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/golang/bin
+      env:
+        CGO_ENABLED: "0"
+        GOFLAGS: -mod=vendor
+    build-commands:
+      - go build -trimpath -ldflags="-s -w" -o protondrive ./cmd/protondrive
+      - install -Dm755 protondrive /app/bin/protondrive
+      - install -Dm644 packaging/flatpak/io.github.colinmario.protondriveforlinux.metainfo.xml /app/share/metainfo/io.github.colinmario.protondriveforlinux.metainfo.xml
+      - install -Dm644 packaging/flatpak/io.github.colinmario.protondriveforlinux.desktop /app/share/applications/io.github.colinmario.protondriveforlinux.desktop
+      - install -Dm644 packaging/flatpak/io.github.colinmario.protondriveforlinux.svg /app/share/icons/hicolor/scalable/apps/io.github.colinmario.protondriveforlinux.svg
+    sources:
+      - type: dir
+        path: ../..
