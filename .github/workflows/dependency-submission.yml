@@ -27,6 +27,6 @@ jobs:
         with:
           go-version: 1.26.5
           cache: true
-      - uses: actions/go-dependency-submission@f35d5c9af13ce9cc32f7930b171e315e878f6921 # v2.0.3
+      - uses: actions/go-dependency-submission@2ca822d507c895fa434a7fe69cacd1cfe9b0aa45 # main (2026-07-13, node24)
         with:
           go-mod-path: go.mod
